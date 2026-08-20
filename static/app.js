@@ -15,7 +15,10 @@
     btnRun: $("btn-run"),
     runState: $("run-state"),
     runStats: $("run-stats"),
-    console: $("console-out")
+    console: $("console-out"),
+    stdinRow: $("console-input-row"),
+    stdinInp: $("console-inp"),
+    btnEof: $("btn-eof")
   };
 
   const LS = "minide.files.";
@@ -284,11 +287,42 @@
   }
 
   /* ---------- run ---------- */
+  var curSeg = null;
+  var curSid = null;
+
   function log(html) {
     var d = document.createElement("div");
     d.innerHTML = html;
     el.console.appendChild(d);
     el.console.scrollTop = el.console.scrollHeight;
+  }
+
+  function streamOut(cls, chunk) {
+    var parts = String(chunk).split("\n");
+    for (var i = 0; i < parts.length; i++) {
+      if (parts[i].length) {
+        if (!curSeg || curSeg.cls !== cls) {
+          curSeg = { el: document.createElement("div"), cls: cls };
+          curSeg.el.className = cls;
+          el.console.appendChild(curSeg.el);
+        }
+        curSeg.el.textContent += parts[i];
+      }
+      if (i < parts.length - 1) curSeg = null;
+    }
+    el.console.scrollTop = el.console.scrollHeight;
+  }
+
+  function finalizeRun(my) {
+    if (my !== runSeq) return;
+    running = false;
+    el.btnRun.disabled = false;
+    el.btnRun.classList.remove("running");
+    el.stdinRow.classList.remove("show");
+    if (!el.runState.textContent) {
+      el.runState.textContent = "idle";
+      el.runState.className = "idle";
+    }
   }
 
   function run() {
@@ -300,47 +334,79 @@
       running = true;
       runSeq++;
       var my = runSeq;
+      curSid = null;
       errMap[f] = {};
+      curSeg = null;
       el.btnRun.disabled = true;
       el.btnRun.classList.add("running");
       el.runState.textContent = "running...";
       el.runState.className = "running";
       el.runStats.textContent = "";
       el.console.innerHTML = "";
-      log("<div class='out-ln'>\u25B8 run " + esc(f) + "</div>");
+      streamOut("out-ln", "\u25B8 run " + f + "\n");
       api("/api/run", { json: { path: f } }).then(function (r) {
-        if (my !== runSeq) return;
-        render();
-        r.stdout.split("\n").forEach(function (ln) { if (ln) log("<div class='out-ln'>" + esc(ln) + "</div>"); });
-        r.stderr.split("\n").forEach(function (ln) { if (ln) log("<div class='err-ln'>" + esc(ln) + "</div>"); });
-        if (r.errors && r.errors.length) {
-          errMap[f] = {};
-          r.errors.forEach(function (e) {
-            errMap[f][e.line] = e;
-            var col = e.col ? ":" + e.col : "";
-            log("<div class='errline'>" + esc(f) + col + ": " + esc(e.msg) + "</div>");
-          });
-        } else {
-          errMap[f] = {};
+        if (my !== runSeq) return finalizeRun(my);
+        curSid = r.id;
+        var es = new EventSource("/api/stream/" + r.id);
+        var closed = false;
+
+        function sendInput(line, eof) {
+          if (!curSid) return;
+          api("/api/input", { json: eof ? { id: curSid, eof: true } : { id: curSid, line: line } })
+            .catch(function (e2) { streamOut("err-ln", "\n[input error: " + e2.message + "]\n"); });
         }
-        log("<div class='out-ln'>\u23F1 exit " + r.exit_code + " in " + r.duration_ms + " ms</div>");
-        el.runState.textContent = r.exit_code === 0 ? "OK" : "exit " + r.exit_code;
-        el.runState.className = r.exit_code === 0 ? "ok" : "fail";
-        el.runStats.textContent = r.duration_ms + " ms";
-        render();
+
+        es.addEventListener("out", function (e) {
+          if (my !== runSeq) return;
+          streamOut("out-ln", JSON.parse(e.data));
+        });
+        es.addEventListener("err", function (e) {
+          if (my !== runSeq) return;
+          streamOut("err-ln", JSON.parse(e.data));
+        });
+        es.addEventListener("errs", function (e) {
+          if (my !== runSeq) return;
+          var errs = JSON.parse(e.data) || [];
+          errMap[f] = {};
+          errs.forEach(function (er) {
+            errMap[f][er.line] = er;
+            var col = er.col ? ":" + er.col : "";
+            log("<div class='errline'>" + esc(f) + col + ": " + esc(er.msg) + "</div>");
+          });
+          render();
+        });
+        es.addEventListener("done", function (e) {
+          if (my !== runSeq) return;
+          var d = JSON.parse(e.data);
+          log("<div class='out-ln'>\u23F1 exit " + d.exit + " in " + d.duration + " ms</div>");
+          el.runState.textContent = d.exit === 0 ? "OK" : "exit " + d.exit;
+          el.runState.className = d.exit === 0 ? "ok" : "fail";
+          el.runStats.textContent = d.duration + " ms";
+          render();
+          closed = true;
+          es.close();
+          finalizeRun(my);
+        });
+        es.onerror = function () {
+          if (closed || my !== runSeq) { es.close(); return; }
+          closed = true;
+          es.close();
+          el.runState.textContent = "error";
+          el.runState.className = "fail";
+          finalizeRun(my);
+        };
+        el.stdinRow.classList.add("show");
+        el.stdinRow.classList.remove("hide");
+        el.stdinInp.disabled = false;
+        el.btnEof.disabled = false;
+        el.stdinInp.value = "";
+        el.stdinInp.focus();
       }).catch(function (e) {
-        if (e.status === 409) log("<div class='err-ln'>" + esc(e.message) + "</div>");
-        else log("<div class='err-ln'>" + esc(e.message) + "</div>");
+        if (my !== runSeq) return finalizeRun(my);
+        streamOut("err-ln", e.message + "\n");
         el.runState.textContent = "error";
         el.runState.className = "fail";
-      }).then(function () {
-        running = false;
-        el.btnRun.disabled = false;
-        el.btnRun.classList.remove("running");
-        if (my === runSeq && !el.runState.textContent) {
-          el.runState.textContent = "idle";
-          el.runState.className = "idle";
-        }
+        finalizeRun(my);
       });
     });
   }
@@ -410,6 +476,22 @@
   });
 
   el.btnRun.addEventListener("click", run);
+  el.btnEof.addEventListener("click", function () {
+    if (!running || !curSid) return;
+    var sid = curSid;
+    curSid = null;
+    el.stdinInp.disabled = true;
+    el.btnEof.disabled = true;
+    api("/api/input", { json: { id: sid, eof: true } }).catch(function () {});
+  });
+  el.stdinInp.addEventListener("keydown", function (e) {
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    var line = el.stdinInp.value;
+    el.stdinInp.value = "";
+    if (!running || !curSid) return;
+    api("/api/input", { json: { id: curSid, line: line } }).catch(function () {});
+  });
   el.btnNew.addEventListener("click", newFile);
   el.btnCreate.addEventListener("click", function () {
     var n = el.inpName.value.trim();

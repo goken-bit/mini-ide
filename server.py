@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import json, os, re, shutil, subprocess, tempfile, threading, time
+import codecs, json, os, queue, re, select, shutil, subprocess, tempfile, threading, time, uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
@@ -18,6 +18,7 @@ MIME = {".html": "text/html; charset=utf-8",
         ".css": "text/css; charset=utf-8",
         ".svg": "image/svg+xml"}
 RUN_LOCK = threading.Lock()
+SESSIONS = {}
 PYTHON = shutil.which("python3") or "/data/data/com.termux/files/usr/bin/python3"
 CLANG = shutil.which("clang++") or "/data/data/com.termux/files/usr/bin/clang++"
 
@@ -100,22 +101,48 @@ def parse_cpp(stderr):
     return errs
 
 
-def run_file(path):
-    ext = os.path.splitext(path)[1].lower()
-    lang = LANG_EXT.get(ext)
-    if lang is None:
-        raise ValueError("unsupported language")
-    fpath = os.path.join(WS, path)
-    if not os.path.isfile(fpath):
-        raise FileNotFoundError(path)
+def run_session(sess, path):
     t0 = time.monotonic()
-    if lang == "python":
-        out = run_cmd([PYTHON, "-u", path], cwd=WS, timeout=15)
-        out["errors"] = parse_py(out["stderr"])
-    else:
-        binfd, binpath = tempfile.mkstemp(prefix="ide_bin_")
-        os.close(binfd)
+
+    def emit(kind, data):
+        sess.events.put({"e": kind, "d": data})
+
+    def pump(stream, is_err):
+        dec = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        buf = sess._errbuf if is_err else sess._outbuf
+        fd = stream.fileno()
         try:
+            while True:
+                if select.select([stream], [], [], 0.1)[0]:
+                    chunk = os.read(fd, 4096)
+                    if not chunk:
+                        break
+                    text = dec.decode(chunk)
+                    if text:
+                        emit("err" if is_err else "out", text)
+                        buf.append(text)
+        except (OSError, ValueError):
+            pass
+        try:
+            tail = dec.decode(b"", final=True)
+            if tail:
+                emit("err" if is_err else "out", tail)
+                buf.append(tail)
+        except Exception:
+            pass
+
+    proc = None
+    binpath = None
+    try:
+        if sess.lang == "python":
+            proc = subprocess.Popen([PYTHON, "-u", path], cwd=WS,
+                                    stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE, text=True, bufsize=1,
+                                    errors="replace")
+            timeout = 15
+        else:
+            binfd, binpath = tempfile.mkstemp(prefix="ide_bin_")
+            os.close(binfd)
             comp = run_cmd([CLANG, "-std=c++17", "-O0", "-Wall",
                             "-fcolor-diagnostics=never", path, "-o", binpath],
                            cwd=WS, timeout=30)
@@ -123,21 +150,91 @@ def run_file(path):
                 comp = run_cmd([CLANG, "-std=c++17", "-O0", "-Wall",
                                 "-fno-color-diagnostics", path, "-o", binpath],
                                cwd=WS, timeout=30)
-            out = comp
-            out["errors"] = parse_cpp(comp["stderr"])
-            if comp["exit_code"] == 0:
-                run = run_cmd([binpath], cwd=WS, timeout=15)
-                out = {"stdout": comp["stdout"] + run["stdout"],
-                       "stderr": comp["stderr"] + run["stderr"],
-                       "exit_code": run["exit_code"], "errors": out["errors"]}
-        finally:
-            try:
+            if comp["exit_code"] != 0:
+                emit("err", comp["stderr"])
+                emit("errs", parse_cpp(comp["stderr"]))
+                emit("done", {"exit": comp["exit_code"], "duration": int((time.monotonic() - t0) * 1000)})
+                sess.done.set()
+                return
+            proc = subprocess.Popen([binpath], cwd=WS, stdin=subprocess.PIPE,
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                    text=True, bufsize=1, errors="replace")
+            timeout = 15
+
+        def write_stdin():
+            while True:
+                item = sess.stdin_q.get()
+                if item is None:
+                    try:
+                        proc.stdin.close()
+                    except (OSError, ValueError):
+                        pass
+                    return
+                try:
+                    proc.stdin.write(item + "\n")
+                    proc.stdin.flush()
+                except (OSError, ValueError):
+                    return
+
+        t_out = threading.Thread(target=pump, args=(proc.stdout, False), daemon=True)
+        t_err = threading.Thread(target=pump, args=(proc.stderr, True), daemon=True)
+        t_in = threading.Thread(target=write_stdin, daemon=True)
+        t_out.start(); t_err.start(); t_in.start()
+
+        deadline = time.monotonic() + timeout
+        while proc.poll() is None:
+            if time.monotonic() > deadline:
+                proc.kill()
+                emit("err", f"\n[process timed out after {timeout}s and was killed]")
+                break
+            time.sleep(0.05)
+        t_out.join(); t_err.join()
+        exit_code = proc.poll()
+        if sess.lang == "python":
+            emit("errs", parse_py("".join(sess._errbuf)))
+        emit("done", {"exit": exit_code, "duration": int((time.monotonic() - t0) * 1000)})
+    finally:
+        sess.done.set()
+        try:
+            if binpath:
                 os.unlink(binpath)
-            except OSError:
-                pass
-    out["duration_ms"] = int((time.monotonic() - t0) * 1000)
-    out["lang"] = lang
-    return out
+        except OSError:
+            pass
+
+
+def start_session(path):
+    ext = os.path.splitext(path)[1].lower()
+    lang = LANG_EXT.get(ext)
+    if lang is None:
+        raise ValueError("unsupported language")
+    if not os.path.isfile(os.path.join(WS, path)):
+        raise FileNotFoundError(path)
+    if not RUN_LOCK.acquire(blocking=False):
+        raise RuntimeError("a run is already in progress")
+    sess = type("S", (), {})()
+    sess.id = uuid.uuid4().hex[:12]
+    sess.lang = lang
+    sess.events = queue.Queue()
+    sess.stdin_q = queue.Queue()
+    sess.done = threading.Event()
+    sess._errbuf = []
+    sess._outbuf = []
+    sess._pumps = 0
+    SESSIONS[sess.id] = sess
+
+    def runner():
+        try:
+            run_session(sess, path)
+        except Exception as e:
+            sess.events.put({"e": "err", "d": f"\n[internal error: {e}]"})
+            sess.events.put({"e": "done", "d": {"exit": 1, "duration": 0}})
+        finally:
+            RUN_LOCK.release()
+            time.sleep(5)
+            SESSIONS.pop(sess.id, None)
+
+    threading.Thread(target=runner, daemon=True).start()
+    return sess.id
 
 
 def api_files(req):
@@ -210,6 +307,40 @@ class Handler(BaseHTTPRequestHandler):
         path = parts.path
         if path == "/api/files":
             self._json(200, {"files": list_files()})
+        elif path.startswith("/api/stream/"):
+            sid = path.split("/")[-1]
+            sess = SESSIONS.get(sid)
+            if sess is None:
+                self.send_error(404)
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Connection", "close")
+            self.send_header("X-Accel-Buffering", "no")
+            self.end_headers()
+            try:
+                while True:
+                    try:
+                        ev = sess.events.get(timeout=1.5)
+                        line = json.dumps(ev["d"], ensure_ascii=False)
+                        payload = f"event: {ev['e']}\ndata: {line}\n\n"
+                        self.wfile.write(payload.encode("utf-8"))
+                        self.wfile.flush()
+                        if ev["e"] == "done":
+                            break
+                    except queue.Empty:
+                        self.wfile.write(b": ping\n\n")
+                        self.wfile.flush()
+                        if sess.done.is_set():
+                            break
+            except (ConnectionError, BrokenPipeError, OSError):
+                pass
+            finally:
+                try:
+                    self.wfile.close()
+                except OSError:
+                    pass
         elif path == "/api/file":
             q = {k: v[0] for k, v in parse_qs(parts.query).items()}
             name = q.get("name", "")
@@ -228,24 +359,35 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(404)
 
     def do_POST(self):
-        if urlparse(self.path).path == "/api/run":
+        p = urlparse(self.path).path
+        if p == "/api/run":
             try:
                 req = self._body()
                 path = sanitize(req.get("path", ""))
-            except ValueError as e:
-                self._json(400, {"error": str(e)})
-                return
-            if not RUN_LOCK.acquire(blocking=False):
-                self._json(409, {"error": "a run is already in progress"})
-                return
-            try:
-                self._json(200, run_file(path))
+                sid = start_session(path)
+            except RuntimeError as e:
+                self._json(409, {"error": str(e)})
             except (FileNotFoundError, ValueError) as e:
                 self._json(404 if isinstance(e, FileNotFoundError) else 400, {"error": str(e)})
-            finally:
-                RUN_LOCK.release()
+            else:
+                self._json(200, {"id": sid})
             return
-        if urlparse(self.path).path == "/api/files":
+        if p == "/api/input":
+            try:
+                req = self._body()
+                sess = SESSIONS.get(req.get("id", ""))
+                if sess is None or sess.done.is_set():
+                    self._json(404, {"error": "no active run for this session"})
+                    return
+                if req.get("eof"):
+                    sess.stdin_q.put(None)
+                else:
+                    sess.stdin_q.put(str(req.get("line", "")))
+                self._json(200, {"ok": True})
+            except (ValueError, OSError) as e:
+                self._json(400, {"error": str(e)})
+            return
+        if p == "/api/files":
             try:
                 req = self._body()
                 self._json(200, api_files(req))

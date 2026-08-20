@@ -231,6 +231,30 @@ body {
   font-weight: 700; padding: 1px 6px; margin: 2px 0; border-radius: 2px;
   display: inline-block;
 }
+#console-input-row {
+  display: none;
+  align-items: center; gap: 6px;
+  padding: 5px 10px;
+  border-top: 1px solid var(--border);
+  background: var(--panel2);
+}
+#console-input-row.show { display: flex; }
+#stdin-label { color: var(--dim); font-size: 12px; font-weight: 700; }
+#console-inp {
+  flex: 1 1 auto; min-width: 0;
+  background: var(--bg); color: var(--fg);
+  border: 1px solid var(--border); border-radius: 4px;
+  padding: 5px 8px; font-family: inherit; font-size: 13px;
+  outline: none;
+}
+#console-inp:focus { border-color: var(--fg); }
+#btn-eof {
+  background: var(--panel2); color: var(--dim);
+  border: 1px solid var(--border); border-radius: 4px;
+  cursor: pointer; font-family: inherit; font-size: 12px;
+  padding: 4px 10px; letter-spacing: 1px;
+}
+#btn-eof:hover { border-color: var(--fg); color: var(--fg); }
 
 /* ---------- scrollbars ---------- */
 ::-webkit-scrollbar { width: 8px; height: 8px; }

@@ -34,7 +34,12 @@
 </div>
 <section id="console">
   <div id="console-head"><span id="run-state"></span><span id="run-stats"></span></div>
-  <pre id="console-out"></pre>
+  <pre id="console-out" role="log"></pre>
+  <div id="console-input-row">
+    <span id="stdin-label">stdin&rsaquo;</span>
+    <input id="console-inp" placeholder="program input — type and press Enter" autocomplete="off" spellcheck="false">
+    <button id="btn-eof" title="Send EOF (close stdin)">EOF</button>
+  </div>
 </section>
 <script src="/app.js"></script>
 </body>
