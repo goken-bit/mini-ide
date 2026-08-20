@@ -257,9 +257,11 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     os.makedirs(WS, exist_ok=True)
-    httpd = ThreadingHTTPServer((HOST, PORT), Handler)
+    host = os.environ.get("HOST", "0.0.0.0" if os.environ.get("PORT") else "127.0.0.1")
+    port = int(os.environ.get("PORT", "8080"))
+    httpd = ThreadingHTTPServer((host, port), Handler)
     httpd.daemon_threads = True
-    print(f"MiniIDE running: http://{HOST}:{PORT}  (open this URL in your phone browser)", flush=True)
+    print(f"MiniIDE running: http://{host}:{port}  (open this URL in your browser)", flush=True)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
