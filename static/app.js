@@ -15,6 +15,7 @@
     btnRun: $("btn-run"),
     btnLoad: $("btn-load"),
     btnSave: $("btn-save"),
+    btnHistory: $("btn-history"),
     filePicker: $("file-picker"),
     runState: $("run-state"),
     runStats: $("run-stats"),
@@ -582,6 +583,88 @@
     });
   }
 
+  /* ---------- history ---------- */
+  function openHistory() {
+    if (!current) return notify("Open or create a file first.");
+    api("/api/versions?name=" + encodeURIComponent(current)).then(function (j) {
+      if (!j.versions.length) {
+        return notify("No saved versions of <b class='file'>" + esc(current) + "</b> yet. Save the file to create a checkpoint.");
+      }
+      var overlay = document.createElement("div");
+      overlay.className = "modal-overlay";
+      var box = document.createElement("div");
+      box.className = "modal";
+      var title = document.createElement("div");
+      title.className = "modal-title";
+      title.textContent = "History \u2014 " + current;
+      var msg = document.createElement("div");
+      msg.className = "modal-msg";
+      msg.textContent = "Pick a version to restore. The current content is kept in history, so nothing is lost.";
+      var list = document.createElement("div");
+      list.className = "hv-list";
+      j.versions.forEach(function (ver, i) {
+        var row = document.createElement("div");
+        row.className = "hv-row";
+        var lab = document.createElement("span");
+        lab.className = "hv-time";
+        lab.textContent = ver.t + (i === 0 ? "  (latest)" : "");
+        var btn = document.createElement("button");
+        btn.className = "modal-btn";
+        btn.textContent = "Restore";
+        btn.addEventListener("click", function () { doRevert(ver, close); });
+        row.appendChild(lab);
+        row.appendChild(btn);
+        list.appendChild(row);
+      });
+      var foot = document.createElement("div");
+      foot.className = "modal-buttons";
+      var closeBtn = document.createElement("button");
+      closeBtn.className = "modal-btn primary";
+      closeBtn.textContent = "Close";
+      closeBtn.addEventListener("click", close);
+      foot.appendChild(closeBtn);
+      function close() {
+        overlay.remove();
+        document.removeEventListener("keydown", onKey, true);
+      }
+      function onKey(e) {
+        if (e.key === "Escape") { e.preventDefault(); close(); }
+      }
+      document.addEventListener("keydown", onKey, true);
+      overlay.addEventListener("mousedown", function (e) {
+        if (e.target === overlay) close();
+      });
+      box.appendChild(title);
+      box.appendChild(msg);
+      box.appendChild(list);
+      box.appendChild(foot);
+      overlay.appendChild(box);
+      document.body.appendChild(overlay);
+    }).catch(function (e) { notify(esc(e.message)); });
+  }
+
+  function doRevert(ver, close) {
+    var warn = dirty.has(current) ? "<br><b style='color:var(--danger, #c33)'>Unsaved changes will be lost.</b>" : "";
+    themedDialog({
+      title: "Restore version?",
+      html: "Restore <b class='file'>" + esc(current) + "</b> to the save from <b>" + esc(ver.t) + "</b>?" + warn,
+      buttons: [
+        { label: "Cancel", value: "cancel" },
+        { label: "Restore", value: "ok", kind: "primary" }
+      ]
+    }).then(function (r) {
+      if (r !== "ok") return;
+      api("/api/revert", { json: { name: current, id: ver.id } }).then(function (j) {
+        files[current] = j.content;
+        dirty.delete(current);
+        el.editor.value = j.content;
+        render();
+        el.runStats.textContent = "restored " + ver.t;
+        if (close) close();
+      }).catch(function (e) { notify(esc(e.message)); });
+    });
+  }
+
   /* ---------- events ---------- */
   el.editor.addEventListener("input", function () {
     if (files[current] !== undefined) files[current] = el.editor.value;
@@ -661,6 +744,7 @@
     if (f) handlePicked(f);
   });
   el.btnSave.addEventListener("click", saveCurrent);
+  el.btnHistory.addEventListener("click", openHistory);
   el.editor.addEventListener("keydown", function (e) {
     if ((e.ctrlKey || e.metaKey) && (e.key === "s" || e.key === "S")) {
       e.preventDefault();

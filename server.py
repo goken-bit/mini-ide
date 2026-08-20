@@ -19,6 +19,9 @@ MIME = {".html": "text/html; charset=utf-8",
         ".svg": "image/svg+xml"}
 RUN_LOCK = threading.Lock()
 SESSIONS = {}
+VER_FILE = os.path.join(WS, ".versions.json")
+VER_LOCK = threading.Lock()
+VER_MAX = 30
 PYTHON = shutil.which("python3") or "/data/data/com.termux/files/usr/bin/python3"
 CLANG = shutil.which("clang++") or "/data/data/com.termux/files/usr/bin/clang++"
 
@@ -40,7 +43,72 @@ def list_files():
         names = os.listdir(WS)
     except OSError:
         names = []
-    return sorted(n for n in names if os.path.isfile(os.path.join(WS, n)))
+    return sorted(n for n in names
+                  if os.path.isfile(os.path.join(WS, n)) and not n.startswith("."))
+
+
+def _read_versions():
+    try:
+        with open(VER_FILE, encoding="utf-8") as f:
+            v = json.load(f)
+        return v if isinstance(v, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _write_versions(v):
+    tmp = VER_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(v, f, ensure_ascii=False)
+    os.replace(tmp, VER_FILE)
+
+
+def _push_version(v, name, content):
+    lst = v.get(name) or []
+    if not lst or lst[-1]["content"] != content:
+        lst.append({"id": time.time_ns() // 1000,
+                    "t": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "content": content})
+        del lst[:-VER_MAX]
+        v[name] = lst
+
+
+def add_version(name, content):
+    with VER_LOCK:
+        v = _read_versions()
+        _push_version(v, name, content)
+        _write_versions(v)
+
+
+def api_versions(name):
+    name = sanitize(name)
+    with VER_LOCK:
+        v = _read_versions().get(name) or []
+    return {"versions": [{"id": e["id"], "t": e["t"]} for e in reversed(v)]}
+
+
+def api_revert(req):
+    name = sanitize(req.get("name", ""))
+    try:
+        vid = int(req.get("id", 0))
+    except (TypeError, ValueError):
+        raise ValueError("invalid version")
+    p = os.path.join(WS, name)
+    with VER_LOCK:
+        v = _read_versions()
+        entry = next((e for e in (v.get(name) or []) if e["id"] == vid), None)
+        if entry is None:
+            raise ValueError("version not found")
+        if os.path.isfile(p):
+            with open(p, encoding="utf-8") as f:
+                cur = f.read()
+            if cur != entry["content"]:
+                _push_version(v, name, cur)
+        _write_versions(v)
+        content = entry["content"]
+    with open(p, "w", encoding="utf-8") as f:
+        f.write(content)
+    return {"content": content, "files": list_files()}
 
 
 def run_cmd(args, cwd, timeout):
@@ -251,13 +319,23 @@ def api_files(req):
         content = req.get("content", "")
         with open(os.path.join(WS, name), "w", encoding="utf-8") as f:
             f.write(content)
+        add_version(name, content)
     elif action == "rename":
         new = sanitize(req.get("new_name", ""))
         if os.path.exists(os.path.join(WS, new)):
             raise ValueError("target already exists")
         shutil.move(os.path.join(WS, name), os.path.join(WS, new))
+        with VER_LOCK:
+            v = _read_versions()
+            if name in v and new not in v:
+                v[new] = v.pop(name)
+                _write_versions(v)
     elif action == "delete":
         os.remove(os.path.join(WS, name))
+        with VER_LOCK:
+            v = _read_versions()
+            if v.pop(name, None) is not None:
+                _write_versions(v)
     else:
         raise ValueError("unknown action")
     return {"files": list_files()}
@@ -347,12 +425,18 @@ class Handler(BaseHTTPRequestHandler):
             q = {k: v[0] for k, v in parse_qs(parts.query).items()}
             name = q.get("name", "")
             p = os.path.join(WS, name)
-            if not os.path.isfile(p) or os.path.commonpath(
+            if name.startswith(".") or not os.path.isfile(p) or os.path.commonpath(
                     [os.path.realpath(WS), os.path.realpath(p)]) != os.path.realpath(WS):
                 self._json(404, {"error": "not found"})
                 return
             with open(p, encoding="utf-8") as f:
                 self._json(200, {"name": name, "content": f.read()})
+        elif path == "/api/versions":
+            q = {k: v[0] for k, v in parse_qs(parts.query).items()}
+            try:
+                self._json(200, api_versions(q.get("name", "")))
+            except ValueError as e:
+                self._json(400, {"error": str(e)})
         elif path in ("/", "/index.html"):
             self._file("index.html", STATIC)
         elif path in ("/app.js", "/style.css"):
@@ -393,6 +477,12 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 req = self._body()
                 self._json(200, api_files(req))
+            except (ValueError, OSError) as e:
+                self._json(400, {"error": str(e)})
+            return
+        if p == "/api/revert":
+            try:
+                self._json(200, api_revert(self._body()))
             except (ValueError, OSError) as e:
                 self._json(400, {"error": str(e)})
             return
