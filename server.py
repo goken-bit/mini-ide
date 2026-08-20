@@ -103,8 +103,12 @@ def parse_cpp(stderr):
 
 def run_session(sess, path):
     t0 = time.monotonic()
+    last_activity = [t0]
+    IDLE_LIMIT = 60
 
     def emit(kind, data):
+        if kind in ("out", "err"):
+            last_activity[0] = time.monotonic()
         sess.events.put({"e": kind, "d": data})
 
     def pump(stream, is_err):
@@ -139,7 +143,6 @@ def run_session(sess, path):
                                     stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                     stderr=subprocess.PIPE, text=True, bufsize=1,
                                     errors="replace")
-            timeout = 15
         else:
             binfd, binpath = tempfile.mkstemp(prefix="ide_bin_")
             os.close(binfd)
@@ -159,7 +162,6 @@ def run_session(sess, path):
             proc = subprocess.Popen([binpath], cwd=WS, stdin=subprocess.PIPE,
                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                     text=True, bufsize=1, errors="replace")
-            timeout = 15
 
         def write_stdin():
             while True:
@@ -173,6 +175,7 @@ def run_session(sess, path):
                 try:
                     proc.stdin.write(item + "\n")
                     proc.stdin.flush()
+                    last_activity[0] = time.monotonic()
                 except (OSError, ValueError):
                     return
 
@@ -181,11 +184,10 @@ def run_session(sess, path):
         t_in = threading.Thread(target=write_stdin, daemon=True)
         t_out.start(); t_err.start(); t_in.start()
 
-        deadline = time.monotonic() + timeout
         while proc.poll() is None:
-            if time.monotonic() > deadline:
+            if time.monotonic() - last_activity[0] > IDLE_LIMIT:
                 proc.kill()
-                emit("err", f"\n[process timed out after {timeout}s and was killed]")
+                emit("err", f"\n[process killed: no activity for {IDLE_LIMIT}s]")
                 break
             time.sleep(0.05)
         t_out.join(); t_err.join()
