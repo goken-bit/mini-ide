@@ -10,8 +10,9 @@
 <header id="topbar">
   <span id="brand">MiniIDE</span>
   <div id="tabs" role="tablist"></div>
-  <button id="btn-load" class="btn-ghost" title="Reload current file from disk (Load)">Load</button>
+  <button id="btn-load" class="btn-ghost" title="Open a file from your device">Load</button>
   <button id="btn-save" class="btn-ghost" title="Save current file (Ctrl+S)">Save</button>
+  <input type="file" id="file-picker" accept=".py,.pyw,.cpp,.cc,.cxx,.c,.h,.hpp,.hh,.txt,.md,.json,.js,.html,.css" hidden>
   <button id="btn-run" title="Run (Ctrl+Enter)">&#9654; Run</button>
 </header>
 <div id="main">

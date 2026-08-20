@@ -58,7 +58,9 @@ body {
 .tab .dot { color: var(--warn); margin-left: 4px; }
 .tab.active .dot { color: var(--ink); }
 .tab .x { color: var(--dim); margin-left: 6px; font-size: 12px; }
+.tab.active .x { color: var(--ink); opacity: .55; }
 .tab:hover .x { color: var(--fg); }
+.tab.active .x:hover { opacity: 1; }
 .tab .x:hover { color: var(--ink); background: var(--fg); border-radius: 2px; }
 #btn-run {
   background: var(--accent); color: var(--ink);
@@ -143,6 +145,11 @@ body {
 }
 #filelist li:hover { background: var(--panel2); color: var(--fg); }
 #filelist li.active { background: var(--accent); color: var(--ink); border-left-color: var(--accent); }
+#filelist li.active.error-file { border-left-color: var(--ink); }
+#filelist li.active:hover { background: var(--accent); }
+#filelist li.active .fbtn { color: var(--ink); opacity: .55; }
+#filelist li.active .fbtn:hover { opacity: 1; text-decoration: underline; }
+#filelist li.active .fbtn.del:hover { background: var(--ink); color: var(--fg); text-decoration: none; }
 #filelist li.error-file { border-left-color: var(--fg); }
 #filelist li.error-file .fname::before {
   content: "!";

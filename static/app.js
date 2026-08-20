@@ -15,6 +15,7 @@
     btnRun: $("btn-run"),
     btnLoad: $("btn-load"),
     btnSave: $("btn-save"),
+    filePicker: $("file-picker"),
     runState: $("run-state"),
     runStats: $("run-stats"),
     console: $("console-out"),
@@ -345,32 +346,51 @@
   }
 
   function loadCurrent() {
-    if (!current) return notify("Open or create a file first.");
-    var name = current;
-    var doLoad = function () {
-      api("/api/file?name=" + encodeURIComponent(name)).then(function (j) {
-        files[name] = j.content;
-        dirty.delete(name);
-        errMap[name] = {};
-        if (current === name && el.editor.value !== j.content) el.editor.value = j.content;
-        render();
-        el.runStats.textContent = "loaded " + new Date().toLocaleTimeString();
-      }).catch(function (e) { notify(esc(e.message)); });
+    el.filePicker.value = "";
+    el.filePicker.click();
+  }
+
+  function handlePicked(file) {
+    var name = file.name;
+    if (!name) return;
+    if (name.indexOf("/") >= 0 || /^\./.test(name) || !/^[A-Za-z0-9_][A-Za-z0-9_ .+\-()\[\]]{0,99}$/.test(name)) {
+      return notify("Invalid file name: <b class='file'>" + esc(name) + "</b>");
+    }
+    var doImport = function () {
+      var reader = new FileReader();
+      reader.onload = function () {
+        var content = String(reader.result || "");
+        api("/api/files", { json: { action: "create", name: name } }).then(function (j) {
+          files = j.files;
+          files[name] = content;
+          dirty.add(name);
+          current = name;
+          errMap[name] = {};
+          render();
+          el.runStats.textContent = "opened " + name;
+          return saveFile(name);
+        }).catch(function (e) {
+          notify(esc(e.message));
+        });
+      };
+      reader.onerror = function () { notify("Could not read the selected file."); };
+      reader.readAsText(file);
     };
-    if (!dirty.has(name)) return doLoad();
-    themedDialog({
-      title: "Unsaved changes",
-      html: "Reloading <b class='file'>" + esc(name) + "</b> from disk will discard your edits.",
-      buttons: [
-        { label: "Cancel", value: "cancel" },
-        { label: "Discard Edits", value: "discard", kind: "danger" },
-        { label: "Save First", value: "save", kind: "primary" }
-      ]
-    }).then(function (r) {
-      if (r === "cancel") return;
-      if (r === "save") return saveFile(name).then(doLoad);
-      doLoad();
-    });
+    if (files.indexOf(name) >= 0) {
+      themedDialog({
+        title: "File exists",
+        html: "<b class='file'>" + esc(name) + "</b> already exists in the workspace.<br>Replace its contents with the file you picked?",
+        buttons: [
+          { label: "Cancel", value: "cancel" },
+          { label: "Replace", value: "ok", kind: "primary" }
+        ]
+      }).then(function (r) {
+        if (r !== "ok") return;
+        doImport();
+      });
+    } else {
+      doImport();
+    }
   }
 
   /* ---------- themed modal ---------- */
@@ -636,6 +656,10 @@
 
   el.btnRun.addEventListener("click", run);
   el.btnLoad.addEventListener("click", loadCurrent);
+  el.filePicker.addEventListener("change", function () {
+    var f = el.filePicker.files && el.filePicker.files[0];
+    if (f) handlePicked(f);
+  });
   el.btnSave.addEventListener("click", saveCurrent);
   el.editor.addEventListener("keydown", function (e) {
     if ((e.ctrlKey || e.metaKey) && (e.key === "s" || e.key === "S")) {
