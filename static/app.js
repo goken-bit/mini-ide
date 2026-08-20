@@ -445,6 +445,22 @@
       run();
       return;
     }
+    if (e.key === "Backspace" && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
+      var ta = el.editor;
+      var s = ta.selectionStart;
+      if (s === ta.selectionEnd && s > 0) {
+        var before = ta.value.slice(0, s);
+        var lineStart = before.lastIndexOf("\n") + 1;
+        var col = s - lineStart;
+        var indent = before.slice(lineStart);
+        if (col >= 4 && col % 4 === 0 && /^[ \t]+$/.test(indent)) {
+          e.preventDefault();
+          ta.setRangeText("", s - 4, s, "end");
+          var ev = new Event("input", { bubbles: true });
+          ta.dispatchEvent(ev);
+        }
+      }
+    }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       var ta = el.editor;
