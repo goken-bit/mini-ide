@@ -377,6 +377,28 @@
     if ((e.ctrlKey || e.metaKey) && (e.key === "Enter" || e.keyCode === 13)) {
       e.preventDefault();
       run();
+      return;
+    }
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      var ta = el.editor;
+      var s = ta.selectionStart;
+      var before = ta.value.slice(0, s);
+      var lineStart = before.lastIndexOf("\n") + 1;
+      var curLine = before.slice(lineStart);
+      var indent = (/^[ \t]*/.exec(curLine) || [""])[0];
+      var next = indent;
+      var trimmed = curLine.trim();
+      if (langOf(current) === "python" && trimmed.endsWith(":")) {
+        next += "    ";
+      } else if (langOf(current) === "cpp") {
+        if (trimmed.endsWith("{")) next += "    ";
+        else if (trimmed.startsWith("}") && indent.length >= 4) next = indent.slice(4);
+      }
+      ta.setRangeText("\n" + next, s, ta.selectionEnd, "end");
+      var ev = new Event("input", { bubbles: true });
+      ta.dispatchEvent(ev);
+      return;
     }
     if (e.key === "Tab" && !e.shiftKey) {
       e.preventDefault();
