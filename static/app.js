@@ -13,6 +13,8 @@
     btnCreate: $("btn-create"),
     btnNew: $("btn-new"),
     btnRun: $("btn-run"),
+    btnLoad: $("btn-load"),
+    btnSave: $("btn-save"),
     runState: $("run-state"),
     runStats: $("run-stats"),
     console: $("console-out"),
@@ -230,14 +232,30 @@
   }
 
   function closeTab(name) {
-    if (name === current) current = null;
-    files.splice(files.indexOf(name), 1);
-    dirty.delete(name);
-    delete errMap[name];
-    var idx = current ? files.indexOf(current) : -1;
-    if (current && idx >= 0) current = files[idx];
-    else if (files.length) current = files[files.length - 1];
-    render();
+    var doClose = function () {
+      if (name === current) current = null;
+      files.splice(files.indexOf(name), 1);
+      dirty.delete(name);
+      delete errMap[name];
+      var idx = current ? files.indexOf(current) : -1;
+      if (current && idx >= 0) current = files[idx];
+      else if (files.length) current = files[files.length - 1];
+      render();
+    };
+    if (!dirty.has(name)) return doClose();
+    themedDialog({
+      title: "Unsaved changes",
+      html: "Close <b class='file'>" + esc(name) + "</b> without saving?",
+      buttons: [
+        { label: "Cancel", value: "cancel" },
+        { label: "Don't Save", value: "discard" },
+        { label: "Save", value: "save", kind: "primary" }
+      ]
+    }).then(function (r) {
+      if (r === "cancel") return;
+      if (r === "save") return saveFile(name).then(doClose);
+      doClose();
+    });
   }
 
   function promptName(prefill) {
@@ -259,19 +277,45 @@
       current = n;
       files[n] = "";
       render();
-    }).catch(function (e) { alert(e.message); });
+    }).catch(function (e) { notify(esc(e.message)); });
   }
 
   function deleteFile(n) {
-    if (!confirm("Delete " + n + "?")) return;
-    api("/api/files", { json: { action: "delete", name: n } }).then(function (j) {
-      files = j.files;
-      if (n === current) current = null;
-      dirty.delete(n);
-      delete errMap[n];
-      if (files.length && !current) current = files[files.length - 1];
-      render();
-    }).catch(function (e) { alert(e.message); });
+    var doDelete = function () {
+      api("/api/files", { json: { action: "delete", name: n } }).then(function (j) {
+        files = j.files;
+        if (n === current) current = null;
+        dirty.delete(n);
+        delete errMap[n];
+        if (files.length && !current) current = files[files.length - 1];
+        render();
+      }).catch(function (e) { notify(esc(e.message)); });
+    };
+    themedDialog({
+      title: "Delete file",
+      html: "Delete <b class='file'>" + esc(n) + "</b>?" +
+        (dirty.has(n) ? "<br><br>It has unsaved changes." : ""),
+      buttons: [
+        { label: "Cancel", value: "cancel" },
+        { label: "Delete", value: "del", kind: "danger" }
+      ]
+    }).then(function (r) {
+      if (r !== "del") return;
+      if (!dirty.has(n)) return doDelete();
+      themedDialog({
+        title: "Unsaved changes",
+        html: "<b class='file'>" + esc(n) + "</b> has unsaved changes.",
+        buttons: [
+          { label: "Cancel", value: "cancel" },
+          { label: "Delete anyway", value: "discard", kind: "danger" },
+          { label: "Save & Delete", value: "save", kind: "primary" }
+        ]
+      }).then(function (r2) {
+        if (r2 === "cancel") return;
+        if (r2 === "save") return saveFile(n).then(doDelete);
+        doDelete();
+      });
+    });
   }
 
   function renameFile(n) {
@@ -283,7 +327,106 @@
       if (dirty.has(n)) { dirty.delete(n); dirty.add(nn); }
       if (errMap[n]) { errMap[nn] = errMap[n]; delete errMap[n]; }
       render();
-    }).catch(function (e) { alert(e.message); });
+    }).catch(function (e) { notify(esc(e.message)); });
+  }
+
+  function saveCurrent() {
+    if (!current) return notify("Open or create a file first.");
+    if (files[current] === undefined) return notify("File not loaded yet.");
+    saveFile(current).then(function () {
+      el.btnSave.classList.add("saved");
+      el.btnSave.textContent = "Saved \u2713";
+      el.runStats.textContent = "saved " + new Date().toLocaleTimeString();
+      setTimeout(function () {
+        el.btnSave.classList.remove("saved");
+        el.btnSave.textContent = "Save";
+      }, 1500);
+    });
+  }
+
+  function loadCurrent() {
+    if (!current) return notify("Open or create a file first.");
+    var name = current;
+    var doLoad = function () {
+      api("/api/file?name=" + encodeURIComponent(name)).then(function (j) {
+        files[name] = j.content;
+        dirty.delete(name);
+        errMap[name] = {};
+        if (current === name && el.editor.value !== j.content) el.editor.value = j.content;
+        render();
+        el.runStats.textContent = "loaded " + new Date().toLocaleTimeString();
+      }).catch(function (e) { notify(esc(e.message)); });
+    };
+    if (!dirty.has(name)) return doLoad();
+    themedDialog({
+      title: "Unsaved changes",
+      html: "Reloading <b class='file'>" + esc(name) + "</b> from disk will discard your edits.",
+      buttons: [
+        { label: "Cancel", value: "cancel" },
+        { label: "Discard Edits", value: "discard", kind: "danger" },
+        { label: "Save First", value: "save", kind: "primary" }
+      ]
+    }).then(function (r) {
+      if (r === "cancel") return;
+      if (r === "save") return saveFile(name).then(doLoad);
+      doLoad();
+    });
+  }
+
+  /* ---------- themed modal ---------- */
+  function themedDialog(opts) {
+    return new Promise(function (resolve) {
+      var overlay = document.createElement("div");
+      overlay.className = "modal-overlay";
+      var box = document.createElement("div");
+      box.className = "modal";
+      var title = document.createElement("div");
+      title.className = "modal-title";
+      title.textContent = opts.title;
+      var msg = document.createElement("div");
+      msg.className = "modal-msg";
+      if (opts.html) msg.innerHTML = opts.html;
+      else msg.textContent = opts.message || "";
+      var foot = document.createElement("div");
+      foot.className = "modal-buttons";
+      var buttons = opts.buttons || [{ label: "OK", value: "ok" }];
+      buttons.forEach(function (b, i) {
+        var btn = document.createElement("button");
+        btn.className = "modal-btn" + (b.kind === "primary" ? " primary" : "") +
+          (b.kind === "danger" ? " danger" : "");
+        btn.textContent = b.label;
+        btn.addEventListener("click", close.bind(null, b.value));
+        foot.appendChild(btn);
+        if (i === 0) btn.focus();
+      });
+      function close(v) {
+        overlay.remove();
+        document.removeEventListener("keydown", onKey, true);
+        resolve(v);
+      }
+      function onKey(e) {
+        if (e.key === "Escape") {
+          e.preventDefault();
+          close(buttons[buttons.length - 1].value);
+        } else if (e.key === "Enter") {
+          e.preventDefault();
+          close(buttons[0].value);
+        }
+      }
+      document.addEventListener("keydown", onKey, true);
+      overlay.addEventListener("mousedown", function (e) {
+        if (e.target === overlay) close(buttons[buttons.length - 1].value);
+      });
+      box.appendChild(title);
+      box.appendChild(msg);
+      box.appendChild(foot);
+      overlay.appendChild(box);
+      document.body.appendChild(overlay);
+    });
+  }
+
+  function notify(msg) {
+    return themedDialog({ title: "MiniIDE", html: msg, buttons: [{ label: "OK", value: "ok", kind: "primary" }] });
   }
 
   /* ---------- run ---------- */
@@ -327,9 +470,9 @@
 
   function run() {
     if (running) return;
-    if (!current) return alert("Open or create a file first");
+    if (!current) return notify("Open or create a file first.");
     var f = current;
-    if (!files[f] && files[f] !== "") return alert("File not loaded yet");
+    if (!files[f] && files[f] !== "") return notify("File not loaded yet.");
     return saveFile(f).then(function () {
       running = true;
       runSeq++;
@@ -492,6 +635,14 @@
   });
 
   el.btnRun.addEventListener("click", run);
+  el.btnLoad.addEventListener("click", loadCurrent);
+  el.btnSave.addEventListener("click", saveCurrent);
+  el.editor.addEventListener("keydown", function (e) {
+    if ((e.ctrlKey || e.metaKey) && (e.key === "s" || e.key === "S")) {
+      e.preventDefault();
+      saveCurrent();
+    }
+  });
   el.btnEof.addEventListener("click", function () {
     if (!running || !curSid) return;
     var sid = curSid;
