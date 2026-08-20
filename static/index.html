@@ -13,6 +13,13 @@
   <button id="btn-load" class="btn-ghost" title="Open a file from your device">Load</button>
   <button id="btn-save" class="btn-ghost" title="Save current file (Ctrl+S)">Save</button>
   <button id="btn-history" class="btn-ghost" title="Restore a previous save of this file">History</button>
+  <button id="btn-wrap" class="btn-ghost" title="Toggle word wrap">Wrap</button>
+  <button id="btn-theme" class="btn-ghost" title="Toggle light/dark theme">&#9789;</button>
+  <button id="btn-font-dec" class="btn-ghost" title="Smaller text">A&minus;</button>
+  <span id="font-size-label">14</span>
+  <button id="btn-font-inc" class="btn-ghost" title="Larger text">A+</button>
+  <button id="btn-zip" class="btn-ghost" title="Download whole workspace as ZIP">Zip</button>
+  <button id="btn-dl" class="btn-ghost" title="Download current file">&#8681;</button>
   <input type="file" id="file-picker" accept=".py,.pyw,.cpp,.cc,.cxx,.c,.h,.hpp,.hh,.txt,.md,.json,.js,.html,.css" hidden>
   <button id="btn-run" title="Run (Ctrl+Enter)">&#9654; Run</button>
 </header>
@@ -31,20 +38,49 @@
   <section id="editor-wrap">
     <div id="gutter" aria-hidden="true"></div>
     <div id="code-wrap">
+      <div id="find-layer" aria-hidden="true"><pre id="find-pre"></pre></div>
       <pre id="highlight" aria-hidden="true"><code id="hl-code"></code></pre>
       <textarea id="editor" spellcheck="false" autocomplete="off" autocapitalize="off" wrap="off"></textarea>
     </div>
   </section>
 </div>
 <section id="console">
-  <div id="console-head"><span id="run-state"></span><span id="run-stats"></span></div>
+  <div id="console-head">
+    <span id="run-state"></span>
+    <span id="run-stats"></span>
+    <span id="console-ops">
+      <button id="btn-clear" class="cbtn" title="Clear console">Clear</button>
+      <button id="btn-copy" class="cbtn" title="Copy console output">Copy</button>
+    </span>
+  </div>
   <pre id="console-out" role="log"></pre>
+  <div id="args-row">
+    <span id="args-label">args</span>
+    <input id="inp-args" placeholder="run arguments — space separated (per file)" autocomplete="off" spellcheck="false">
+  </div>
   <div id="console-input-row">
     <span id="stdin-label">stdin&rsaquo;</span>
     <input id="console-inp" placeholder="program input — type and press Enter" autocomplete="off" spellcheck="false">
     <button id="btn-eof" title="Send EOF (close stdin)">EOF</button>
   </div>
 </section>
+<div id="findbar" hidden>
+  <input id="find-inp" placeholder="Find" autocomplete="off" spellcheck="false">
+  <input id="find-repl" placeholder="Replace" autocomplete="off" spellcheck="false">
+  <button id="find-prev" title="Previous match">&#8593;</button>
+  <button id="find-next" title="Next match">&#8595;</button>
+  <label class="fd-case" title="Match case"><input type="checkbox" id="find-case"> Aa</label>
+  <button id="find-rep" title="Replace current match">Rep</button>
+  <button id="find-repall" title="Replace all matches">All</button>
+  <span id="find-count"></span>
+  <button id="find-close" title="Close (Esc)">&#10005;</button>
+</div>
+<footer id="statusbar">
+  <span id="st-pos">Ln 1, Col 1</span>
+  <span id="st-lang">&mdash;</span>
+  <span id="st-dirty"></span>
+  <span id="st-words"></span>
+</footer>
 <script src="/app.js"></script>
 </body>
 </html>

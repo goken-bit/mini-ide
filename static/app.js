@@ -16,6 +16,34 @@
     btnLoad: $("btn-load"),
     btnSave: $("btn-save"),
     btnHistory: $("btn-history"),
+    btnWrap: $("btn-wrap"),
+    btnTheme: $("btn-theme"),
+    btnFontInc: $("btn-font-inc"),
+    btnFontDec: $("btn-font-dec"),
+    fontSizeLabel: $("font-size-label"),
+    btnZip: $("btn-zip"),
+    btnDl: $("btn-dl"),
+    btnRun: $("btn-run"),
+    stPos: $("st-pos"),
+    stLang: $("st-lang"),
+    stDirty: $("st-dirty"),
+    stWords: $("st-words"),
+    btnClear: $("btn-clear"),
+    btnCopy: $("btn-copy"),
+    argsRow: $("args-row"),
+    inpArgs: $("inp-args"),
+    findLayer: $("find-layer"),
+    findPre: $("find-pre"),
+    findBar: $("findbar"),
+    findInp: $("find-inp"),
+    findRepl: $("find-repl"),
+    findPrev: $("find-prev"),
+    findNext: $("find-next"),
+    findCase: $("find-case"),
+    findRep: $("find-rep"),
+    findRepall: $("find-repall"),
+    findCount: $("find-count"),
+    findClose: $("find-close"),
     filePicker: $("file-picker"),
     runState: $("run-state"),
     runStats: $("run-stats"),
@@ -32,6 +60,11 @@
   let errMap = {};        // filename -> {line: {col, msg}}
   let running = false;
   let runSeq = 0;
+  let argsMap = {};       // filename -> [args...]
+  let prefs = { wrap: false, theme: "dark", size: 14 };
+  let findState = { open: false, q: "", repl: "", case: false, matches: [], idx: 0 };
+  let persistTimer = null;
+  let pending = null;
 
   const LANG_OF = {
     py: "python", pyw: "python",
@@ -146,6 +179,10 @@
     buildTabs();
     buildList();
     document.title = (dirty.has(current) ? "* " : "") + (current || "MiniIDE") + " — MiniIDE";
+    updateStatus();
+    syncArgsInput();
+    renderFindLayer();
+    schedulePersist();
   }
 
   function lineCount(src) {
@@ -165,7 +202,7 @@
     el.gutter.innerHTML = h;
     if (lang === "cpp" && n < 1000) {
       if (el.gutter.scrollHeight < el.gutter.clientHeight) {
-        el.gutter.style.height = (n * 21 + 16) + "px";
+        el.gutter.style.height = (n * LH() + 16) + "px";
       } else el.gutter.style.height = "";
     }
     el.gutter.scrollTop = el.editor.scrollTop;
@@ -191,10 +228,18 @@
 
   function buildList() {
     var h = "";
+    var lastF = null;
     files.forEach(function (f) {
-      h += '<li data-f="' + esc(f) + '" class="' + (f === current ? "active " : "") +
-        (errMap[f] ? "error-file" : "") + '">' +
-        '<span class="fname">' + esc(f) + (dirty.has(f) ? " \u25CF" : "") + "</span>" +
+      var i = f.lastIndexOf("/");
+      var folder = i >= 0 ? f.slice(0, i) : "";
+      if (folder !== lastF) {
+        lastF = folder;
+        if (folder) h += '<li class="fld" data-f="">' + esc(folder) + "/</li>";
+      }
+      var depth = folder ? folder.split("/").length : 0;
+      h += '<li data-f="' + esc(f) + '" style="padding-left:' + (6 + depth * 16) + 'px" class="' +
+        (f === current ? "active " : "") + (errMap[f] ? "error-file" : "") + '">' +
+        '<span class="fname">' + esc(i >= 0 ? f.slice(i + 1) : f) + (dirty.has(f) ? " \u25CF" : "") + "</span>" +
         '<span class="fops">' +
         '<button class="fbtn" data-op="rename">\u270E</button>' +
         '<button class="fbtn del" data-op="del">\u2715</button>' +
@@ -216,7 +261,7 @@
     });
   }
 
-  function openFile(name) {
+  function openFile(name, done) {
     if (!files.includes(name)) return;
     if (current !== name) {
       var prev = current;
@@ -227,10 +272,13 @@
         api("/api/file?name=" + encodeURIComponent(current)).then(function (j) {
           files[current] = j.content;
           render();
-        }).catch(function (e) { console.error(e); files[current] = ""; render(); });
+          if (done) done();
+        }).catch(function (e) { console.error(e); files[current] = ""; render(); if (done) done(); });
+        return;
       }
     }
     render();
+    if (done) done();
   }
 
   function closeTab(name) {
@@ -477,101 +525,122 @@
     el.console.scrollTop = el.console.scrollHeight;
   }
 
+  function setRunBtn(stopMode) {
+    el.btnRun.textContent = stopMode ? "\u25A0 Stop" : "\u25B6 Run";
+    el.btnRun.title = stopMode ? "Stop the running process" : "Run (Ctrl+Enter)";
+  }
+
   function finalizeRun(my) {
     if (my !== runSeq) return;
     running = false;
-    el.btnRun.disabled = false;
     el.btnRun.classList.remove("running");
+    setRunBtn(false);
     el.stdinRow.classList.remove("show");
     if (!el.runState.textContent) {
       el.runState.textContent = "idle";
       el.runState.className = "idle";
     }
+    if (pending) {
+      var p = pending;
+      pending = null;
+      if (p === "run") run();
+      else repl();
+    }
   }
 
   function run() {
-    if (running) return;
     if (!current) return notify("Open or create a file first.");
     var f = current;
     if (!files[f] && files[f] !== "") return notify("File not loaded yet.");
-    return saveFile(f).then(function () {
-      running = true;
-      runSeq++;
-      var my = runSeq;
-      curSid = null;
-      errMap[f] = {};
-      curSeg = null;
-      el.btnRun.disabled = true;
-      el.btnRun.classList.add("running");
-      el.runState.textContent = "running...";
-      el.runState.className = "running";
-      el.runStats.textContent = "";
-      el.console.innerHTML = "";
-      streamOut("out-ln", "\u25B8 run " + f + "\n");
-      api("/api/run", { json: { path: f } }).then(function (r) {
-        if (my !== runSeq) return finalizeRun(my);
-        curSid = r.id;
-        var es = new EventSource("/api/stream/" + r.id);
-        var closed = false;
+    if (running) { pending = "run"; if (curSid) api("/api/stop", { json: { id: curSid } }).catch(function () {}); return; }
+    saveFile(f).then(function () {
+      startRun(api("/api/run", { json: { path: f, args: argsMap[f] || [] } }), f);
+    });
+  }
 
-        function sendInput(line, eof) {
-          if (!curSid) return;
-          api("/api/input", { json: eof ? { id: curSid, eof: true } : { id: curSid, line: line } })
-            .catch(function (e2) { streamOut("err-ln", "\n[input error: " + e2.message + "]\n"); });
-        }
+  function repl() {
+    if (running) { pending = "repl"; if (curSid) api("/api/stop", { json: { id: curSid } }).catch(function () {}); return; }
+    startRun(api("/api/shell", { json: { cmd: "python3 -q -i" } }), null);
+  }
 
-        es.addEventListener("out", function (e) {
-          if (my !== runSeq) return;
-          streamOut("out-ln", JSON.parse(e.data));
+  function startRun(promise, errFile) {
+    running = true;
+    runSeq++;
+    var my = runSeq;
+    curSid = null;
+    if (errFile) errMap[errFile] = {};
+    curSeg = null;
+    el.btnRun.classList.add("running");
+    setRunBtn(true);
+    el.runState.textContent = "running...";
+    el.runState.className = "running";
+    el.runStats.textContent = "";
+    el.console.innerHTML = "";
+    streamOut("out-ln", (errFile ? "\u25B8 run " + errFile : "\u25B8 shell") + "\n");
+    promise.then(function (r) {
+      if (my !== runSeq) return finalizeRun(my);
+      curSid = r.id;
+      var es = new EventSource("/api/stream/" + r.id);
+      var closed = false;
+
+      function sendInput(line, eof) {
+        if (!curSid) return;
+        api("/api/input", { json: eof ? { id: curSid, eof: true } : { id: curSid, line: line } })
+          .catch(function (e2) { streamOut("err-ln", "\n[input error: " + e2.message + "]\n"); });
+      }
+
+      es.addEventListener("out", function (e) {
+        if (my !== runSeq) return;
+        streamOut("out-ln", JSON.parse(e.data));
+      });
+      es.addEventListener("err", function (e) {
+        if (my !== runSeq) return;
+        streamOut("err-ln", JSON.parse(e.data));
+      });
+      es.addEventListener("errs", function (e) {
+        if (my !== runSeq || !errFile) return;
+        var errs = JSON.parse(e.data) || [];
+        errMap[errFile] = {};
+        errs.forEach(function (er) {
+          errMap[errFile][er.line] = er;
+          var col = er.col ? ":" + er.col : "";
+          log('<div class="errline" data-line="' + er.line + '" data-file="' + esc(errFile) + '">' +
+            esc(errFile) + col + ": " + esc(er.msg) + "</div>");
         });
-        es.addEventListener("err", function (e) {
-          if (my !== runSeq) return;
-          streamOut("err-ln", JSON.parse(e.data));
-        });
-        es.addEventListener("errs", function (e) {
-          if (my !== runSeq) return;
-          var errs = JSON.parse(e.data) || [];
-          errMap[f] = {};
-          errs.forEach(function (er) {
-            errMap[f][er.line] = er;
-            var col = er.col ? ":" + er.col : "";
-            log("<div class='errline'>" + esc(f) + col + ": " + esc(er.msg) + "</div>");
-          });
-          render();
-        });
-        es.addEventListener("done", function (e) {
-          if (my !== runSeq) return;
-          var d = JSON.parse(e.data);
-          log("<div class='out-ln'>\u23F1 exit " + d.exit + " in " + d.duration + " ms</div>");
-          el.runState.textContent = d.exit === 0 ? "OK" : "exit " + d.exit;
-          el.runState.className = d.exit === 0 ? "ok" : "fail";
-          el.runStats.textContent = d.duration + " ms";
-          render();
-          closed = true;
-          es.close();
-          finalizeRun(my);
-        });
-        es.onerror = function () {
-          if (closed || my !== runSeq) { es.close(); return; }
-          closed = true;
-          es.close();
-          el.runState.textContent = "error";
-          el.runState.className = "fail";
-          finalizeRun(my);
-        };
-        el.stdinRow.classList.add("show");
-        el.stdinRow.classList.remove("hide");
-        el.stdinInp.disabled = false;
-        el.btnEof.disabled = false;
-        el.stdinInp.value = "";
-        el.stdinInp.focus();
-      }).catch(function (e) {
-        if (my !== runSeq) return finalizeRun(my);
-        streamOut("err-ln", e.message + "\n");
+        render();
+      });
+      es.addEventListener("done", function (e) {
+        if (my !== runSeq) return;
+        var d = JSON.parse(e.data);
+        log("<div class='out-ln'>\u23F1 exit " + d.exit + " in " + d.duration + " ms</div>");
+        el.runState.textContent = d.exit === 0 ? "OK" : "exit " + d.exit;
+        el.runState.className = d.exit === 0 ? "ok" : "fail";
+        el.runStats.textContent = d.duration + " ms";
+        render();
+        closed = true;
+        es.close();
+        finalizeRun(my);
+      });
+      es.onerror = function () {
+        if (closed || my !== runSeq) { es.close(); return; }
+        closed = true;
+        es.close();
         el.runState.textContent = "error";
         el.runState.className = "fail";
         finalizeRun(my);
-      });
+      };
+      el.stdinRow.classList.add("show");
+      el.stdinRow.classList.remove("hide");
+      el.stdinInp.disabled = false;
+      el.btnEof.disabled = false;
+      el.stdinInp.value = "";
+      el.stdinInp.focus();
+    }).catch(function (e) {
+      if (my !== runSeq) return finalizeRun(my);
+      streamOut("err-ln", e.message + "\n");
+      el.runState.textContent = "error";
+      el.runState.className = "fail";
+      finalizeRun(my);
     });
   }
 
@@ -665,6 +734,289 @@
     });
   }
 
+  /* ---------- status bar & prefs ---------- */
+  function lineCol(pos) {
+    var s = el.editor.value.slice(0, pos);
+    var ln = 1, col = 1;
+    for (var i = 0; i < s.length; i++) {
+      if (s[i] === "\n") { ln++; col = 1; } else col++;
+    }
+    return [ln, col];
+  }
+
+  function langLabel(name) {
+    var L = { python: "Python", cpp: "C++" };
+    var m = langOf(name);
+    return m ? (L[m] || m) : "text";
+  }
+
+  function updateStatus() {
+    if (!current) {
+      el.stPos.textContent = "Ln 1, Col 1";
+      el.stLang.textContent = "\u2014";
+      el.stDirty.textContent = "";
+      el.stWords.textContent = "";
+      return;
+    }
+    var lc = lineCol(el.editor.selectionStart);
+    el.stPos.textContent = "Ln " + lc[0] + ", Col " + lc[1];
+    el.stLang.textContent = langLabel(current);
+    el.stDirty.textContent = dirty.has(current) ? "\u25CF" : "";
+    var w = (files[current] || "").trim().split(/\s+/).filter(Boolean).length;
+    el.stWords.textContent = w + " word" + (w === 1 ? "" : "s");
+  }
+
+  function LH() { return prefs.size + 7; }
+
+  function applyPrefs() {
+    document.documentElement.classList.toggle("light", prefs.theme === "light");
+    el.btnTheme.textContent = prefs.theme === "light" ? "\u263E" : "\u263D";
+    document.documentElement.style.setProperty("--size", prefs.size + "px");
+    document.documentElement.style.setProperty("--lh", LH() + "px");
+    el.fontSizeLabel.textContent = prefs.size;
+    applyWrap();
+  }
+
+  function applyWrap() {
+    el.editor.wrap = prefs.wrap ? "soft" : "off";
+    el.editor.classList.toggle("wrap", prefs.wrap);
+    el.hl.classList.toggle("wrap", prefs.wrap);
+    el.findPre.classList.toggle("wrap", prefs.wrap);
+    el.btnWrap.classList.toggle("on", prefs.wrap);
+  }
+
+  /* ---------- find & replace ---------- */
+  function escRe(s) {
+    return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+
+  function findRegex() {
+    if (!findState.q) return null;
+    try {
+      return new RegExp(escRe(findState.q), "g" + (findState.case ? "" : "i"));
+    } catch (e) { return null; }
+  }
+
+  function renderFindLayer() {
+    var layer = el.findLayer;
+    if (!findState.open || !findState.q) { layer.style.display = "none"; return; }
+    var src = el.editor.value;
+    var re = findRegex();
+    var out = "", last = 0, k = 0;
+    findState.matches = [];
+    if (re) {
+      var m;
+      while (k < 10000 && (m = re.exec(src))) {
+        if (!m[0].length) { re.lastIndex++; continue; }
+        findState.matches.push({ s: m.index, e: m.index + m[0].length });
+        k++;
+      }
+    }
+    findState.matches.forEach(function (mm, i) {
+      out += esc(src.slice(last, mm.s)) +
+        '<span class="fm' + (i === findState.idx ? " cur" : "") + '">' +
+        esc(src.slice(mm.s, mm.e)) + "</span>";
+      last = mm.e;
+    });
+    out += esc(src.slice(last));
+    el.findPre.innerHTML = out || "";
+    layer.style.display = "";
+    layer.scrollTop = el.editor.scrollTop;
+    layer.scrollLeft = el.editor.scrollLeft;
+    updateFindCount();
+  }
+
+  function updateFindCount() {
+    el.findCount.textContent = findState.matches.length ?
+      (findState.idx + 1) + "/" + findState.matches.length : "no matches";
+  }
+
+  function scrollToMatch(mm) {
+    var src = el.editor.value;
+    var ln = 1, pos;
+    for (var i = 0; i < src.length && i < mm.s; i++) if (src[i] === "\n") ln++;
+    var lh = LH();
+    el.editor.scrollTop = Math.max(0, (ln - 1) * lh - el.editor.clientHeight / 2 + lh / 2);
+    syncScroll();
+  }
+
+  function goFind(dir) {
+    if (!findState.matches.length) { updateFindCount(); return; }
+    findState.idx = (findState.idx + dir + findState.matches.length) % findState.matches.length;
+    var mm = findState.matches[findState.idx];
+    el.editor.focus();
+    el.editor.setSelectionRange(mm.s, mm.e);
+    scrollToMatch(mm);
+    renderFindLayer();
+  }
+
+  function setFindResult() {
+    renderFindLayer();
+    if (findState.matches.length) {
+      findState.idx = 0;
+      var mm = findState.matches[0];
+      el.editor.setSelectionRange(mm.s, mm.e);
+      scrollToMatch(mm);
+    } else {
+      el.editor.setSelectionRange(el.editor.selectionStart, el.editor.selectionStart);
+    }
+  }
+
+  function openFind() {
+    findState.open = true;
+    el.findBar.hidden = false;
+    el.findInp.value = findState.q;
+    el.findRepl.value = findState.repl;
+    el.findCase.checked = findState.case;
+    if (!findState.q) {
+      var sel = el.editor.value.slice(el.editor.selectionStart, el.editor.selectionEnd);
+      if (sel && !/\n/.test(sel)) { findState.q = sel; el.findInp.value = sel; }
+    }
+    setFindResult();
+    el.findInp.focus();
+    el.findInp.select();
+  }
+
+  function closeFind() {
+    findState.open = false;
+    el.findBar.hidden = true;
+    el.findLayer.style.display = "none";
+    el.editor.focus();
+  }
+
+  function replaceOne() {
+    if (!findState.matches.length) return;
+    var mm = findState.matches[findState.idx];
+    el.editor.setRangeText(findState.repl, mm.s, mm.e, "select");
+    var ev = new Event("input", { bubbles: true });
+    el.editor.dispatchEvent(ev);
+    setFindResult();
+  }
+
+  function replaceAll() {
+    if (!findState.matches.length) return;
+    var v = el.editor.value;
+    var out = "", last = 0;
+    findState.matches.forEach(function (mm) {
+      out += v.slice(last, mm.s) + findState.repl;
+      last = mm.e;
+    });
+    out += v.slice(last);
+    el.editor.value = out;
+    files[current] = out;
+    dirty.add(current);
+    var ev = new Event("input", { bubbles: true });
+    el.editor.dispatchEvent(ev);
+    setFindResult();
+  }
+
+  /* ---------- editor navigation ---------- */
+  function jumpToLine(line) {
+    var src = el.editor.value;
+    var lines = src.split("\n");
+    if (line < 1) line = 1;
+    if (line > lines.length) line = lines.length;
+    var pos = 0;
+    for (var i = 0; i < line - 1; i++) pos += lines[i].length + 1;
+    el.editor.focus();
+    el.editor.setSelectionRange(pos, pos);
+    var lh = LH();
+    el.editor.scrollTop = Math.max(0, (line - 1) * lh - el.editor.clientHeight / 2 + lh / 2);
+    syncScroll();
+    var g = el.gutter.children[line - 1];
+    if (g) {
+      g.classList.add("flash");
+      setTimeout(function () { g.classList.remove("flash"); }, 600);
+    }
+    updateStatus();
+  }
+
+  /* ---------- persist / restore ---------- */
+  function persist() {
+    var docs = {};
+    files.forEach(function (f) {
+      if (files[f] !== undefined || dirty.has(f)) {
+        docs[f] = { c: files[f] || "", d: dirty.has(f) };
+        if (argsMap[f]) docs[f].a = argsMap[f];
+      }
+    });
+    try {
+      localStorage.setItem(LS + "state", JSON.stringify({
+        tabs: files, docs: docs, current: current,
+        wrap: prefs.wrap, theme: prefs.theme, size: prefs.size
+      }));
+    } catch (e) {}
+  }
+
+  function schedulePersist() {
+    clearTimeout(persistTimer);
+    persistTimer = setTimeout(persist, 1000);
+  }
+
+  function flushPersist() {
+    clearTimeout(persistTimer);
+    persist();
+  }
+
+  function restoreState() {
+    var st = null;
+    try { st = JSON.parse(localStorage.getItem(LS + "state")); } catch (e) {}
+    if (!st) return;
+    prefs.wrap = !!st.wrap;
+    prefs.theme = st.theme === "light" ? "light" : "dark";
+    prefs.size = Math.min(32, Math.max(10, +st.size || 14));
+    applyPrefs();
+    if (Array.isArray(st.tabs) && st.tabs.length) {
+      files = st.tabs.slice();
+      files.forEach(function (f) {
+        if (st.docs && st.docs[f]) {
+          files[f] = st.docs[f].c || "";
+          if (st.docs[f].d) dirty.add(f);
+          if (st.docs[f].a) argsMap[f] = st.docs[f].a;
+        }
+      });
+      current = typeof st.current === "string" && files.indexOf(st.current) >= 0 ?
+        st.current : files[files.length - 1];
+    }
+  }
+
+  /* ---------- console ops & export ---------- */
+  function copyConsole() {
+    var txt = el.console.innerText;
+    if (!txt) return;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(txt).catch(function () {});
+      return;
+    }
+    var ta = document.createElement("textarea");
+    ta.value = txt;
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand("copy"); } catch (e) {}
+    ta.remove();
+  }
+
+  function dlZip() {
+    var a = document.createElement("a");
+    a.href = "/api/export?as=workspace";
+    a.download = "workspace.zip";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }
+
+  function dlCurrent() {
+    if (!current) return notify("Open or create a file first.");
+    var blob = new Blob([files[current] || ""], { type: "text/plain;charset=utf-8" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = current.split("/").pop();
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
+  }
+
   /* ---------- events ---------- */
   el.editor.addEventListener("input", function () {
     if (files[current] !== undefined) files[current] = el.editor.value;
@@ -678,6 +1030,10 @@
       prevScroll = el.editor.scrollTop;
       el.hl.scrollTop = el.editor.scrollTop;
       el.gutter.scrollTop = el.editor.scrollTop;
+      if (findState.open) {
+        el.findLayer.scrollTop = el.editor.scrollTop;
+        el.findLayer.scrollLeft = el.editor.scrollLeft;
+      }
     }
     if (el.hl.scrollLeft !== el.editor.scrollLeft) {
       el.hl.scrollLeft = el.editor.scrollLeft;
@@ -689,6 +1045,18 @@
     if ((e.ctrlKey || e.metaKey) && (e.key === "Enter" || e.keyCode === 13)) {
       e.preventDefault();
       run();
+      return;
+    }
+    if ((e.ctrlKey || e.metaKey) && (e.key === "f" || e.key === "F")) {
+      e.preventDefault();
+      openFind();
+      return;
+    }
+    if ((e.ctrlKey || e.metaKey) && (e.key === "h" || e.key === "H")) {
+      e.preventDefault();
+      openFind();
+      el.findRepl.focus();
+      el.findRepl.select();
       return;
     }
     if (e.key === "Backspace" && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
@@ -751,6 +1119,83 @@
       saveCurrent();
     }
   });
+
+  el.btnWrap.addEventListener("click", function () {
+    prefs.wrap = !prefs.wrap;
+    applyWrap();
+    persist();
+    el.editor.focus();
+  });
+  el.btnTheme.addEventListener("click", function () {
+    prefs.theme = prefs.theme === "light" ? "dark" : "light";
+    applyPrefs();
+    persist();
+  });
+  el.btnFontDec.addEventListener("click", function () {
+    if (prefs.size <= 10) return;
+    prefs.size--;
+    applyPrefs();
+    persist();
+    render();
+  });
+  el.btnFontInc.addEventListener("click", function () {
+    if (prefs.size >= 32) return;
+    prefs.size++;
+    applyPrefs();
+    persist();
+    render();
+  });
+  el.btnZip.addEventListener("click", dlZip);
+  el.btnDl.addEventListener("click", dlCurrent);
+  el.btnClear.addEventListener("click", function () { el.console.innerHTML = ""; });
+  el.btnCopy.addEventListener("click", copyConsole);
+
+  function syncArgsInput() {
+    el.argsRow.classList.toggle("show", !!current);
+    el.inpArgs.value = current && argsMap[current] ? argsMap[current].join(" ") : "";
+  }
+  el.inpArgs.addEventListener("input", function () {
+    if (!current) return;
+    argsMap[current] = el.inpArgs.value.trim() ? el.inpArgs.value.trim().split(/\s+/) : [];
+    schedulePersist();
+  });
+
+  el.findInp.addEventListener("input", function () {
+    findState.q = el.findInp.value;
+    setFindResult();
+  });
+  el.findRepl.addEventListener("input", function () { findState.repl = el.findRepl.value; });
+  el.findCase.addEventListener("change", function () {
+    findState.case = el.findCase.checked;
+    setFindResult();
+  });
+  el.findPrev.addEventListener("click", function () { goFind(-1); });
+  el.findNext.addEventListener("click", function () { goFind(1); });
+  el.findRep.addEventListener("click", replaceOne);
+  el.findRepall.addEventListener("click", replaceAll);
+  el.findClose.addEventListener("click", closeFind);
+  el.findInp.addEventListener("keydown", function (e) {
+    if (e.key === "Enter") { e.preventDefault(); goFind(e.shiftKey ? -1 : 1); }
+    else if (e.key === "Escape") { e.preventDefault(); closeFind(); }
+  });
+  el.findRepl.addEventListener("keydown", function (e) {
+    if (e.key === "Enter") { e.preventDefault(); replaceOne(); }
+    else if (e.key === "Escape") { e.preventDefault(); closeFind(); }
+  });
+
+  el.editor.addEventListener("keyup", updateStatus);
+  el.editor.addEventListener("click", updateStatus);
+  el.editor.addEventListener("select", updateStatus);
+
+  el.console.addEventListener("click", function (e) {
+    var t = e.target.closest(".errline");
+    if (!t) return;
+    var line = +t.getAttribute("data-line");
+    var file = t.getAttribute("data-file");
+    var go = function () { jumpToLine(line); };
+    if (file && file !== current) openFile(file, go);
+    else go();
+  });
   el.btnEof.addEventListener("click", function () {
     if (!running || !curSid) return;
     var sid = curSid;
@@ -778,22 +1223,36 @@
 
   function refresh() {
     api("/api/files").then(function (j) {
-      files = j.files;
+      var joined = j.files.slice();
+      files.forEach(function (f) {
+        if (files[f] !== undefined && joined.indexOf(f) < 0) joined.push(f);
+      });
+      files = joined;
       if (current && !files.includes(current)) current = null;
       if (!current && files.length) {
         current = files[files.length - 1];
-        api("/api/file?name=" + encodeURIComponent(current)).then(function (r) {
-          files[current] = r.content;
-          render();
-        });
+        if (files[current] === undefined) {
+          api("/api/file?name=" + encodeURIComponent(current)).then(function (r) {
+            files[current] = r.content;
+            render();
+          });
+        }
       }
       render();
+      flushPersist();
     });
   }
 
   window.addEventListener("beforeunload", function (e) {
+    flushPersist();
     if (dirty.size) { e.preventDefault(); e.returnValue = ""; }
   });
+  document.addEventListener("visibilitychange", function () {
+    if (document.visibilityState === "hidden") flushPersist();
+  });
 
+  applyPrefs();
+  restoreState();
+  render();
   refresh();
 })();

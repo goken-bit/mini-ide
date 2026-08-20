@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import codecs, json, os, queue, re, select, shutil, subprocess, tempfile, threading, time, uuid
+import codecs, io, json, os, queue, re, select, shutil, subprocess, tempfile, threading, time, uuid, zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
@@ -9,7 +9,8 @@ STATIC = os.path.join(ROOT, "static")
 HOST, PORT = "127.0.0.1", 8080
 MAX_BODY = 4 << 20
 
-NAME_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_. +\-()\[\]]{0,99}$")
+NAME_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_. +\-()\[\]/]{0,199}$")
+SRCS_RE = re.compile(r"^\s*srcs\s*=\s*(.+?)\s*$")
 LANG_EXT = {".py": "python", ".pyw": "python",
             ".cpp": "cpp", ".cc": "cpp", ".cxx": "cpp", ".c++": "cpp",
             ".c": "cpp", ".h": "cpp", ".hpp": "cpp", ".hh": "cpp"}
@@ -30,8 +31,13 @@ CPP_DIAG = re.compile(r"^([^:]+):(\d+):(?:(?:(\d+)): )?((?:fatal )?error|warning
 
 
 def sanitize(name):
+    if isinstance(name, str) and "\\" in name:
+        name = name.replace("\\", "/")
     if not isinstance(name, str) or not NAME_RE.match(name) or name.startswith("."):
         raise ValueError("invalid filename")
+    for seg in name.split("/"):
+        if seg in ("", ".", ".."):
+            raise ValueError("invalid filename")
     p = os.path.join(WS, name)
     if os.path.commonpath([os.path.realpath(WS), os.path.realpath(p)]) != os.path.realpath(WS):
         raise ValueError("invalid filename")
@@ -39,12 +45,17 @@ def sanitize(name):
 
 
 def list_files():
+    out = []
     try:
-        names = os.listdir(WS)
+        for root, dirs, names in os.walk(WS):
+            dirs[:] = sorted(d for d in dirs if not d.startswith("."))
+            for n in names:
+                if n.startswith("."):
+                    continue
+                out.append(os.path.relpath(os.path.join(root, n), WS).replace(os.sep, "/"))
     except OSError:
-        names = []
-    return sorted(n for n in names
-                  if os.path.isfile(os.path.join(WS, n)) and not n.startswith("."))
+        pass
+    return sorted(out)
 
 
 def _read_versions():
@@ -169,7 +180,11 @@ def parse_cpp(stderr):
     return errs
 
 
-def run_session(sess, path):
+def sess_emit(sess, kind, data):
+    sess.events.put({"e": kind, "d": data})
+
+
+def run_proc(sess, proc, parse=None):
     t0 = time.monotonic()
     last_activity = [t0]
     IDLE_LIMIT = 60
@@ -203,101 +218,146 @@ def run_session(sess, path):
         except Exception:
             pass
 
-    proc = None
-    binpath = None
-    try:
-        if sess.lang == "python":
-            proc = subprocess.Popen([PYTHON, "-u", path], cwd=WS,
-                                    stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                    stderr=subprocess.PIPE, text=True, bufsize=1,
-                                    errors="replace")
-        else:
-            binfd, binpath = tempfile.mkstemp(prefix="ide_bin_")
-            os.close(binfd)
-            comp = run_cmd([CLANG, "-std=c++17", "-O0", "-Wall",
-                            "-fcolor-diagnostics=never", path, "-o", binpath],
-                           cwd=WS, timeout=30)
-            if comp["exit_code"] != 0 and "unknown argument" in comp["stderr"]:
-                comp = run_cmd([CLANG, "-std=c++17", "-O0", "-Wall",
-                                "-fno-color-diagnostics", path, "-o", binpath],
-                               cwd=WS, timeout=30)
-            if comp["exit_code"] != 0:
-                emit("err", comp["stderr"])
-                emit("errs", parse_cpp(comp["stderr"]))
-                emit("done", {"exit": comp["exit_code"], "duration": int((time.monotonic() - t0) * 1000)})
-                sess.done.set()
-                return
-            proc = subprocess.Popen([binpath], cwd=WS, stdin=subprocess.PIPE,
-                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                    text=True, bufsize=1, errors="replace")
-
-        def write_stdin():
-            while True:
-                item = sess.stdin_q.get()
-                if item is None:
-                    try:
-                        proc.stdin.close()
-                    except (OSError, ValueError):
-                        pass
-                    return
+    def write_stdin():
+        while True:
+            item = sess.stdin_q.get()
+            if item is None:
                 try:
-                    proc.stdin.write(item + "\n")
-                    proc.stdin.flush()
-                    last_activity[0] = time.monotonic()
+                    proc.stdin.close()
                 except (OSError, ValueError):
-                    return
+                    pass
+                return
+            try:
+                proc.stdin.write(item + "\n")
+                proc.stdin.flush()
+                last_activity[0] = time.monotonic()
+            except (OSError, ValueError):
+                return
 
-        t_out = threading.Thread(target=pump, args=(proc.stdout, False), daemon=True)
-        t_err = threading.Thread(target=pump, args=(proc.stderr, True), daemon=True)
-        t_in = threading.Thread(target=write_stdin, daemon=True)
-        t_out.start(); t_err.start(); t_in.start()
+    t_out = threading.Thread(target=pump, args=(proc.stdout, False), daemon=True)
+    t_err = threading.Thread(target=pump, args=(proc.stderr, True), daemon=True)
+    t_in = threading.Thread(target=write_stdin, daemon=True)
+    t_out.start(); t_err.start(); t_in.start()
 
-        while proc.poll() is None:
-            if time.monotonic() - last_activity[0] > IDLE_LIMIT:
-                proc.kill()
-                emit("err", f"\n[process killed: no activity for {IDLE_LIMIT}s]")
-                break
-            time.sleep(0.05)
-        t_out.join(); t_err.join()
-        exit_code = proc.poll()
-        if sess.lang == "python":
-            emit("errs", parse_py("".join(sess._errbuf)))
-        emit("done", {"exit": exit_code, "duration": int((time.monotonic() - t0) * 1000)})
-    finally:
-        sess.done.set()
+    while proc.poll() is None:
+        if sess.stop.is_set():
+            proc.kill()
+            emit("err", "\n[process stopped]")
+            break
+        if time.monotonic() - last_activity[0] > IDLE_LIMIT:
+            proc.kill()
+            emit("err", f"\n[process killed: no activity for {IDLE_LIMIT}s]")
+            break
+        time.sleep(0.05)
+    t_out.join(); t_err.join()
+    exit_code = proc.poll()
+    if parse == "py":
+        emit("errs", parse_py("".join(sess._errbuf)))
+    emit("done", {"exit": exit_code, "duration": int((time.monotonic() - t0) * 1000)})
+    sess.done.set()
+
+
+def cpp_srcs(main):
+    if os.path.splitext(main)[1].lower() not in (".cpp", ".cc", ".cxx", ".c++"):
+        return [main]
+    proj = os.path.join(WS, "project.txt")
+    srcs = None
+    if os.path.isfile(proj):
         try:
-            if binpath:
-                os.unlink(binpath)
+            with open(proj, encoding="utf-8") as f:
+                for ln in f.read().splitlines():
+                    m = SRCS_RE.match(ln)
+                    if m:
+                        srcs = [s for s in m.group(1).split() if s]
+                        break
+        except OSError:
+            pass
+    if not srcs:
+        return [main]
+    out = [sanitize(s) for s in srcs]
+    if main not in out:
+        out.append(main)
+    return out
+
+
+def run_session(sess, path):
+    if sess.lang == "python":
+        run_proc(sess, subprocess.Popen([PYTHON, "-u", path] + sess.args, cwd=WS,
+                                        stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                        stderr=subprocess.PIPE, text=True, bufsize=1,
+                                        errors="replace"), "py")
+        return
+    binfd, binpath = tempfile.mkstemp(prefix="ide_bin_")
+    os.close(binfd)
+    try:
+        srcs = cpp_srcs(path)
+        comp = run_cmd([CLANG, "-std=c++17", "-O0", "-Wall",
+                        "-fcolor-diagnostics=never"] + srcs + ["-o", binpath],
+                       cwd=WS, timeout=30)
+        if comp["exit_code"] != 0 and "unknown argument" in comp["stderr"]:
+            comp = run_cmd([CLANG, "-std=c++17", "-O0", "-Wall",
+                            "-fno-color-diagnostics"] + srcs + ["-o", binpath],
+                           cwd=WS, timeout=30)
+        if comp["exit_code"] != 0:
+            sess_emit(sess, "err", comp["stderr"])
+            sess_emit(sess, "errs", parse_cpp(comp["stderr"]))
+            sess_emit(sess, "done", {"exit": comp["exit_code"], "duration": 0})
+            sess.done.set()
+            return
+        run_proc(sess, subprocess.Popen([binpath] + sess.args, cwd=WS,
+                                        stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                        stderr=subprocess.PIPE, text=True, bufsize=1,
+                                        errors="replace"))
+    finally:
+        try:
+            os.unlink(binpath)
         except OSError:
             pass
 
 
-def start_session(path):
-    ext = os.path.splitext(path)[1].lower()
-    lang = LANG_EXT.get(ext)
-    if lang is None:
-        raise ValueError("unsupported language")
-    if not os.path.isfile(os.path.join(WS, path)):
-        raise FileNotFoundError(path)
-    if not RUN_LOCK.acquire(blocking=False):
+def run_shell(sess, cmd):
+    run_proc(sess, subprocess.Popen(cmd, shell=True, cwd=WS,
+                                    stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE, text=True, bufsize=1,
+                                    errors="replace"))
+
+
+def start_session(kind, target, args=None):
+    if kind == "run":
+        p = os.path.join(WS, target)
+        if not os.path.isfile(p):
+            raise FileNotFoundError(target)
+        lang = LANG_EXT.get(os.path.splitext(target)[1].lower())
+        if lang is None:
+            raise ValueError("unsupported language")
+    else:
+        lang = "shell"
+    if not RUN_LOCK.acquire(timeout=5):
         raise RuntimeError("a run is already in progress")
     sess = type("S", (), {})()
     sess.id = uuid.uuid4().hex[:12]
+    sess.kind = kind
     sess.lang = lang
+    sess.target = target
+    sess.args = args or []
+    sess.stop = threading.Event()
     sess.events = queue.Queue()
     sess.stdin_q = queue.Queue()
     sess.done = threading.Event()
     sess._errbuf = []
     sess._outbuf = []
-    sess._pumps = 0
     SESSIONS[sess.id] = sess
 
     def runner():
         try:
-            run_session(sess, path)
+            if kind == "shell":
+                run_shell(sess, target)
+            else:
+                run_session(sess, target)
         except Exception as e:
-            sess.events.put({"e": "err", "d": f"\n[internal error: {e}]"})
-            sess.events.put({"e": "done", "d": {"exit": 1, "duration": 0}})
+            sess_emit(sess, "err", f"\n[internal error: {e}]")
+            sess_emit(sess, "done", {"exit": 1, "duration": 0})
+            sess.done.set()
         finally:
             RUN_LOCK.release()
             time.sleep(5)
@@ -307,6 +367,8 @@ def start_session(path):
     return sess.id
 
 
+
+
 def api_files(req):
     name = sanitize(req.get("name", ""))
     action = req.get("action")
@@ -314,16 +376,26 @@ def api_files(req):
         p = os.path.join(WS, name)
         if os.path.exists(p):
             raise ValueError("file already exists")
+        d = os.path.dirname(p)
+        if d:
+            os.makedirs(d, exist_ok=True)
         open(p, "w").close()
     elif action == "save":
         content = req.get("content", "")
-        with open(os.path.join(WS, name), "w", encoding="utf-8") as f:
+        p = os.path.join(WS, name)
+        d = os.path.dirname(p)
+        if d:
+            os.makedirs(d, exist_ok=True)
+        with open(p, "w", encoding="utf-8") as f:
             f.write(content)
         add_version(name, content)
     elif action == "rename":
         new = sanitize(req.get("new_name", ""))
         if os.path.exists(os.path.join(WS, new)):
             raise ValueError("target already exists")
+        d = os.path.dirname(os.path.join(WS, new))
+        if d:
+            os.makedirs(d, exist_ok=True)
         shutil.move(os.path.join(WS, name), os.path.join(WS, new))
         with VER_LOCK:
             v = _read_versions()
@@ -339,6 +411,27 @@ def api_files(req):
     else:
         raise ValueError("unknown action")
     return {"files": list_files()}
+
+
+def check_args(args):
+    if not isinstance(args, list):
+        raise ValueError("args must be a list")
+    total = 0
+    for a in args:
+        if not isinstance(a, str) or not a or "\n" in a or "\0" in a or len(a) > 4096:
+            raise ValueError("invalid argument")
+        total += len(a)
+    if total > 65536:
+        raise ValueError("too many arguments")
+    return args
+
+
+def export_zip():
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for rel in list_files():
+            z.write(os.path.join(WS, rel), rel)
+    return buf.getvalue()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -437,6 +530,17 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(200, api_versions(q.get("name", "")))
             except ValueError as e:
                 self._json(400, {"error": str(e)})
+        elif path == "/api/export":
+            body = export_zip()
+            q = {k: v[0] for k, v in parse_qs(parts.query).items()}
+            self.send_response(200)
+            self.send_header("Content-Type", "application/zip")
+            self.send_header("Content-Disposition",
+                             'attachment; filename="' + (q.get("as") or "workspace") + '.zip"')
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
         elif path in ("/", "/index.html"):
             self._file("index.html", STATIC)
         elif path in ("/app.js", "/style.css"):
@@ -450,11 +554,38 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 req = self._body()
                 path = sanitize(req.get("path", ""))
-                sid = start_session(path)
+                args = check_args(req.get("args") or [])
+                sid = start_session("run", path, args)
             except RuntimeError as e:
                 self._json(409, {"error": str(e)})
             except (FileNotFoundError, ValueError) as e:
                 self._json(404 if isinstance(e, FileNotFoundError) else 400, {"error": str(e)})
+            else:
+                self._json(200, {"id": sid})
+            return
+        if p == "/api/stop":
+            try:
+                req = self._body()
+                sess = SESSIONS.get(req.get("id", ""))
+                if sess is None or sess.done.is_set():
+                    self._json(404, {"error": "no active run for this session"})
+                    return
+                sess.stop.set()
+                self._json(200, {"ok": True})
+            except (ValueError, OSError) as e:
+                self._json(400, {"error": str(e)})
+            return
+        if p == "/api/shell":
+            try:
+                req = self._body()
+                cmd = str(req.get("cmd", "")).strip()
+                if not cmd or "\0" in cmd or len(cmd) > 8192:
+                    raise ValueError("invalid command")
+                sid = start_session("shell", cmd)
+            except RuntimeError as e:
+                self._json(409, {"error": str(e)})
+            except (FileNotFoundError, ValueError) as e:
+                self._json(400, {"error": str(e)})
             else:
                 self._json(200, {"id": sid})
             return
