@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>MiniIDE</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header id="topbar">
+  <span id="brand">MiniIDE</span>
+  <div id="tabs" role="tablist"></div>
+  <button id="btn-run" title="Run (Ctrl+Enter)">&#9654; Run</button>
+</header>
+<div id="main">
+  <aside id="sidebar">
+    <div id="sidebar-head">
+      <span>Files</span>
+      <button id="btn-new" title="New file">+ New</button>
+    </div>
+    <div id="sidebar-head2">
+      <input id="inp-name" placeholder="name.py / name.cpp" autocomplete="off">
+      <button id="btn-create" title="Create">Create</button>
+    </div>
+    <ul id="filelist"></ul>
+  </aside>
+  <section id="editor-wrap">
+    <div id="gutter" aria-hidden="true"></div>
+    <div id="code-wrap">
+      <pre id="highlight" aria-hidden="true"><code id="hl-code"></code></pre>
+      <textarea id="editor" spellcheck="false" autocomplete="off" autocapitalize="off" wrap="off"></textarea>
+    </div>
+  </section>
+</div>
+<section id="console">
+  <div id="console-head"><span id="run-state"></span><span id="run-stats"></span></div>
+  <pre id="console-out"></pre>
+</section>
+<script src="/app.js"></script>
+</body>
+</html>
