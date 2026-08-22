@@ -228,15 +228,15 @@ body {
 #filelist li.active .fbtn { color: var(--ink); opacity: .55; }
 #filelist li.active .fbtn:hover { opacity: 1; text-decoration: underline; }
 #filelist li.active .fbtn.del:hover { background: var(--ink); color: var(--fg); text-decoration: none; }
-#filelist li.error-file { border-left-color: var(--fg); }
+#filelist li.error-file { border-left-color: #ff5555; }
 #filelist li.error-file .fname::before {
   content: "!";
   display: inline-block; width: 14px; height: 14px; line-height: 14px;
   text-align: center; font-size: 11px; font-weight: 700;
-  background: var(--fg); color: var(--ink);
-  border-radius: 2px; margin-right: 6px;
+  background: transparent; color: #ff5555;
+  border: 1px solid rgba(255,85,85,0.5); border-radius: 2px; margin-right: 6px;
 }
-#filelist li.active.error-file .fname::before { background: var(--ink); color: var(--fg); }
+#filelist li.active.error-file .fname::before { background: transparent; color: #ff5555; border-color: rgba(255,85,85,0.5); }
 #filelist li .fname { overflow: hidden; text-overflow: ellipsis; flex: 1 1 auto; }
 #filelist li .fops { flex: 0 0 auto; display: none; gap: 2px; }
 #filelist li:hover .fops { display: flex; }
@@ -266,12 +266,12 @@ body {
 }
 #gutter div { height: var(--lh); padding-right: 6px; white-space: pre; }
 #gutter div.err {
-  background: var(--fg); color: var(--ink); font-weight: 700;
-  border-right: 2px solid var(--fg);
+  background: rgba(255,85,85,0.08); color: #ff6b6b; font-weight: 400;
+  border-left: 2px solid #ff6b6b; border-right: none;
 }
 #gutter div.warn {
-  background: var(--warn); color: var(--ink); font-weight: 700;
-  border-right: 2px solid var(--warn);
+  background: rgba(255,85,85,0.08); color: #ff6b6b; font-weight: 400;
+  border-left: 2px solid #ff6b6b; border-right: none;
 }
 #gutter div.flash {
   background: var(--warn); color: var(--ink);
@@ -357,14 +357,14 @@ body {
 #console-out .err-ln { color: var(--dim); }
 #console-out .out-ln { color: var(--fg); }
 #console-out .errline {
-  background: var(--fg); color: var(--ink);
-  font-weight: 700; padding: 1px 6px; margin: 2px 0; border-radius: 2px;
-  display: inline-block;
+  background: rgba(255,85,85,0.09); color: var(--fg);
+  font-weight: 400; padding: 2px 8px; margin: 2px 0; border-radius: 3px;
+  display: inline-block; border-left: 2px solid #ff5555;
 }
 #console-out .warnline {
-  background: var(--warn); color: var(--ink);
-  font-weight: 700; padding: 1px 6px; margin: 2px 0; border-radius: 2px;
-  display: inline-block;
+  background: rgba(255,85,85,0.09); color: var(--fg);
+  font-weight: 400; padding: 2px 8px; margin: 2px 0; border-radius: 3px;
+  display: inline-block; border-left: 2px solid #ff5555;
 }
 #console-input-row {
   display: none;
@@ -410,8 +410,8 @@ body {
 .search-hit:hover { background: var(--panel); }
 .search-hit-file { color: var(--warn); font-weight: 700; flex: 0 0 auto; }
 .search-hit-text { color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1 1 auto; }
-.lens-err { text-decoration: wavy underline #ff5555; text-decoration-thickness: 2px; text-underline-offset: 3px; }
-.lens-warn { text-decoration: wavy underline var(--warn); text-decoration-thickness: 2px; text-underline-offset: 3px; }
+.lens-err { text-decoration: wavy underline rgba(255,85,85,0.9); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+.lens-warn { text-decoration: wavy underline rgba(189,189,189,0.8); text-decoration-thickness: 1px; text-underline-offset: 2px; }
 .lens-err:hover, .lens-warn:hover { background: rgba(255,255,255,.06); }
 #findbar-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 
