@@ -8,6 +8,7 @@
 </head>
 <body>
 <header id="topbar">
+  <button id="btn-toggle-sidebar" class="btn-ghost btn-toggle" title="Hide sidebar (Ctrl+B)" aria-expanded="true" aria-controls="sidebar" aria-label="Toggle sidebar">&#9776;</button>
   <span id="brand">MiniIDE</span>
   <div id="tabs" role="tablist"></div>
   <button id="btn-load" class="btn-ghost" title="Open a file from your device">Load</button>
@@ -20,22 +21,24 @@
   <button id="btn-font-inc" class="btn-ghost" title="Larger text">A+</button>
   <button id="btn-zip" class="btn-ghost" title="Download whole workspace as ZIP">Zip</button>
   <button id="btn-dl" class="btn-ghost" title="Download current file">&#8681;</button>
+  <button id="btn-toggle-console" class="btn-ghost btn-toggle" title="Hide terminal (Ctrl+J)" aria-expanded="true" aria-controls="console" aria-label="Toggle terminal">&#9724;</button>
   <input type="file" id="file-picker" accept=".py,.pyw,.cpp,.cc,.cxx,.c,.h,.hpp,.hh,.txt,.md,.json,.js,.html,.css" hidden>
   <button id="btn-run" title="Run (Ctrl+Enter)">&#9654; Run</button>
 </header>
 <div id="main">
-  <aside id="sidebar">
-    <div id="sidebar-head">
-      <span>Files</span>
-      <button id="btn-new" title="New file">+ New</button>
-    </div>
-    <div id="sidebar-head2">
-      <input id="inp-name" placeholder="name.py / name.cpp" autocomplete="off">
-      <button id="btn-create" title="Create">Create</button>
-    </div>
-    <ul id="filelist"></ul>
-  </aside>
-  <section id="editor-wrap">
+  <aside id="sidebar" aria-label="File explorer">
+     <div id="sidebar-head">
+       <span>Files</span>
+       <button id="btn-new" title="New file">+ New</button>
+     </div>
+     <div id="sidebar-head2">
+       <input id="inp-name" placeholder="name.py / name.cpp" autocomplete="off">
+       <button id="btn-create" title="Create">Create</button>
+     </div>
+     <ul id="filelist"></ul>
+   </aside>
+   <button id="handle-sidebar" class="pane-handle pane-handle-v" title="Toggle sidebar (Ctrl+B)" aria-label="Toggle sidebar" aria-expanded="true" aria-controls="sidebar"><span></span></button>
+   <section id="editor-wrap">
     <div id="gutter" aria-hidden="true"></div>
     <div id="code-wrap">
       <div id="find-layer" aria-hidden="true"><pre id="find-pre"></pre></div>
@@ -44,7 +47,8 @@
     </div>
   </section>
 </div>
-<section id="console">
+<button id="handle-console" class="pane-handle pane-handle-h" title="Toggle terminal (Ctrl+J)" aria-label="Toggle terminal" aria-expanded="true" aria-controls="console"><span></span></button>
+<section id="console" aria-label="Terminal">
   <div id="console-head">
     <span id="run-state"></span>
     <span id="run-stats"></span>
@@ -75,6 +79,7 @@
   <span id="find-count"></span>
   <button id="find-close" title="Close (Esc)">&#10005;</button>
 </div>
+<div id="sidebar-backdrop" hidden aria-hidden="true"></div>
 <footer id="statusbar">
   <span id="st-pos">Ln 1, Col 1</span>
   <span id="st-lang">&mdash;</span>

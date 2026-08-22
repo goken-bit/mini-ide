@@ -110,12 +110,55 @@ body {
 
 /* ---------- sidebar ---------- */
 #sidebar {
-  width: 230px; flex: 0 0 auto;
+  width: 230px; flex: 0 0 230px;
   background: var(--panel);
   border-right: 1px solid var(--border);
   display: flex; flex-direction: column;
   min-height: 0;
+  overflow: hidden;
+  visibility: visible;
+  transition: width .22s ease, flex-basis .22s ease, visibility .22s ease, border-width .22s ease, transform .22s ease;
 }
+#sidebar.collapsed {
+  width: 0; flex: 0 0 0;
+  min-width: 0;
+  overflow: hidden;
+  visibility: hidden;
+  border-right-width: 0;
+}
+.pane-handle {
+  flex: 0 0 6px;
+  background: transparent;
+  border: none;
+  padding: 0;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer;
+  transition: background .15s ease;
+  z-index: 2;
+}
+.pane-handle span {
+  display: block;
+  background: var(--border);
+  border-radius: 2px;
+  transition: background .15s ease;
+}
+.pane-handle-v { flex: 0 0 8px; cursor: col-resize; border-left: 1px solid transparent; border-right: 1px solid transparent; background: var(--panel); }
+.pane-handle-v span { width: 2px; height: 24px; }
+.pane-handle-h { flex: 0 0 8px; height: 8px; cursor: row-resize; border-top: 1px solid transparent; border-bottom: 1px solid transparent; background: var(--panel); width: 100%; }
+.pane-handle-h span { width: 24px; height: 2px; }
+.pane-handle:hover { background: var(--panel2); }
+.pane-handle:hover span { background: var(--dim); }
+.pane-handle:focus-visible { outline: 1px solid var(--fg); outline-offset: -1px; }
+#sidebar-backdrop {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,.45);
+  z-index: 39;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity .22s ease, visibility .22s ease;
+}
+#sidebar-backdrop.show { opacity: 1; visibility: visible; }
+.btn-toggle { min-width: 32px; }
 #sidebar-head {
   display: flex; justify-content: space-between; align-items: center;
   padding: 9px 12px 8px;
@@ -189,9 +232,10 @@ body {
 
 /* ---------- editor ---------- */
 #editor-wrap {
-  flex: 1 1 auto; display: flex;
+  flex: 1 1 0; display: flex;
   min-width: 0; min-height: 0;
   position: relative;
+  transition: flex-basis .22s ease;
 }
 #gutter {
   width: 52px; flex: 0 0 auto;
@@ -250,11 +294,25 @@ body {
 
 /* ---------- console ---------- */
 #console {
-  flex: 0 0 auto; max-height: 38%;
+  flex: 0 0 auto; max-height: 38vh;
   background: var(--panel);
   border-top: 1px solid var(--border);
   display: flex; flex-direction: column;
+  overflow: hidden;
+  visibility: visible;
+  transition: max-height .22s ease, height .22s ease, flex-basis .22s ease, visibility .22s ease, border-width .22s ease;
 }
+#console.collapsed {
+  max-height: 28px; height: 28px;
+  flex: 0 0 28px;
+  overflow: hidden;
+  visibility: visible;
+  border-top-width: 1px;
+}
+#console.collapsed #console-out,
+#console.collapsed #args-row,
+#console.collapsed #console-input-row { display: none !important; }
+#console.collapsed #console-head { border-bottom: none; }
 #console-head {
   display: flex; gap: 14px; padding: 5px 10px;
   color: var(--dim); font-size: 12px; border-bottom: 1px solid var(--border);
@@ -445,4 +503,30 @@ body {
   #sidebar { width: 150px; }
   #gutter { width: 40px; }
   body { font-size: 13px; }
+  #sidebar {
+    position: fixed;
+    top: 0; left: 0; bottom: 0;
+    width: 230px; flex: none;
+    z-index: 41;
+    max-height: 100vh; max-height: 100dvh;
+    border-right: 1px solid var(--border);
+    transform: translateX(-100%);
+    visibility: hidden;
+    transition: transform .22s ease, visibility .22s ease;
+  }
+  #sidebar:not(.collapsed) {
+    transform: translateX(0);
+    visibility: visible;
+    box-shadow: 4px 0 24px rgba(0,0,0,.5);
+  }
+  #sidebar.collapsed {
+    transform: translateX(-100%);
+    visibility: hidden;
+    width: 230px; flex: none;
+    border-right-width: 1px;
+  }
+  #handle-sidebar { display: none; }
+  #handle-console { flex: 0 0 8px; }
+  #main { position: relative; }
+  #findbar { top: 52px; }
 }

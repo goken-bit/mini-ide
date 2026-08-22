@@ -23,7 +23,6 @@
     fontSizeLabel: $("font-size-label"),
     btnZip: $("btn-zip"),
     btnDl: $("btn-dl"),
-    btnRun: $("btn-run"),
     stPos: $("st-pos"),
     stLang: $("st-lang"),
     stDirty: $("st-dirty"),
@@ -50,7 +49,14 @@
     console: $("console-out"),
     stdinRow: $("console-input-row"),
     stdinInp: $("console-inp"),
-    btnEof: $("btn-eof")
+    btnEof: $("btn-eof"),
+    sidebar: $("sidebar"),
+    consolePanel: $("console"),
+    btnToggleSidebar: $("btn-toggle-sidebar"),
+    btnToggleConsole: $("btn-toggle-console"),
+    handleSidebar: $("handle-sidebar"),
+    handleConsole: $("handle-console"),
+    backdrop: $("sidebar-backdrop")
   };
 
   const LS = "minide.files.";
@@ -61,7 +67,7 @@
   let running = false;
   let runSeq = 0;
   let argsMap = {};       // filename -> [args...]
-  let prefs = { wrap: false, theme: "dark", size: 14 };
+  let prefs = { wrap: false, theme: "dark", size: 14, sidebarVisible: true, consoleVisible: true };
   let findState = { open: false, q: "", repl: "", case: false, matches: [], idx: 0 };
   let persistTimer = null;
   let pending = null;
@@ -564,6 +570,11 @@
   }
 
   function startRun(promise, errFile) {
+    if (!prefs.consoleVisible) {
+      prefs.consoleVisible = true;
+      applyConsoleState();
+      persist();
+    }
     running = true;
     runSeq++;
     var my = runSeq;
@@ -775,6 +786,8 @@
     document.documentElement.style.setProperty("--lh", LH() + "px");
     el.fontSizeLabel.textContent = prefs.size;
     applyWrap();
+    applySidebarState();
+    applyConsoleState();
   }
 
   function applyWrap() {
@@ -783,6 +796,60 @@
     el.hl.classList.toggle("wrap", prefs.wrap);
     el.findPre.classList.toggle("wrap", prefs.wrap);
     el.btnWrap.classList.toggle("on", prefs.wrap);
+  }
+
+  function applySidebarState() {
+    var v = !!prefs.sidebarVisible;
+    el.sidebar.classList.toggle("collapsed", !v);
+    el.btnToggleSidebar.setAttribute("aria-expanded", String(v));
+    el.btnToggleSidebar.title = (v ? "Hide" : "Show") + " sidebar (Ctrl+B)";
+    el.handleSidebar.setAttribute("aria-expanded", String(v));
+    el.handleSidebar.title = (v ? "Hide" : "Show") + " sidebar (Ctrl+B)";
+    var isMobile = window.matchMedia("(max-width: 640px)").matches;
+    if (isMobile) {
+      if (v) {
+        el.backdrop.hidden = false;
+        requestAnimationFrame(function () {
+          el.backdrop.classList.add("show");
+        });
+      } else {
+        el.backdrop.classList.remove("show");
+        setTimeout(function () { if (!prefs.sidebarVisible) el.backdrop.hidden = true; }, 220);
+      }
+      el.backdrop.setAttribute("aria-hidden", v ? "false" : "true");
+    } else {
+      el.backdrop.hidden = true;
+      el.backdrop.classList.remove("show");
+      el.backdrop.setAttribute("aria-hidden", "true");
+    }
+  }
+
+  function applyConsoleState() {
+    var v = !!prefs.consoleVisible;
+    el.consolePanel.classList.toggle("collapsed", !v);
+    el.btnToggleConsole.setAttribute("aria-expanded", String(v));
+    el.btnToggleConsole.title = (v ? "Hide" : "Show") + " terminal (Ctrl+J)";
+    el.handleConsole.setAttribute("aria-expanded", String(v));
+    el.handleConsole.title = (v ? "Hide" : "Show") + " terminal (Ctrl+J)";
+  }
+
+  function toggleSidebar() {
+    prefs.sidebarVisible = !prefs.sidebarVisible;
+    applySidebarState();
+    persist();
+  }
+
+  function toggleConsole() {
+    prefs.consoleVisible = !prefs.consoleVisible;
+    applyConsoleState();
+    persist();
+  }
+
+  function onLayoutTransitionEnd(e) {
+    if (e.target !== el.sidebar && e.target !== el.consolePanel) return;
+    if (e.propertyName !== "width" && e.propertyName !== "max-height" && e.propertyName !== "transform" && e.propertyName !== "flex-basis") return;
+    syncScroll();
+    render();
   }
 
   /* ---------- find & replace ---------- */
@@ -943,7 +1010,8 @@
     try {
       localStorage.setItem(LS + "state", JSON.stringify({
         tabs: files, docs: docs, current: current,
-        wrap: prefs.wrap, theme: prefs.theme, size: prefs.size
+        wrap: prefs.wrap, theme: prefs.theme, size: prefs.size,
+        sidebarVisible: prefs.sidebarVisible, consoleVisible: prefs.consoleVisible
       }));
     } catch (e) {}
   }
@@ -965,6 +1033,8 @@
     prefs.wrap = !!st.wrap;
     prefs.theme = st.theme === "light" ? "light" : "dark";
     prefs.size = Math.min(32, Math.max(10, +st.size || 14));
+    if (typeof st.sidebarVisible === "boolean") prefs.sidebarVisible = st.sidebarVisible;
+    if (typeof st.consoleVisible === "boolean") prefs.consoleVisible = st.consoleVisible;
     applyPrefs();
     if (Array.isArray(st.tabs) && st.tabs.length) {
       files = st.tabs.slice();
@@ -1196,6 +1266,29 @@
     if (file && file !== current) openFile(file, go);
     else go();
   });
+
+  el.btnToggleSidebar.addEventListener("click", toggleSidebar);
+  el.btnToggleConsole.addEventListener("click", toggleConsole);
+  el.handleSidebar.addEventListener("click", toggleSidebar);
+  el.handleConsole.addEventListener("click", toggleConsole);
+  el.backdrop.addEventListener("click", function () {
+    if (prefs.sidebarVisible) toggleSidebar();
+  });
+  el.sidebar.addEventListener("transitionend", onLayoutTransitionEnd);
+  el.consolePanel.addEventListener("transitionend", onLayoutTransitionEnd);
+  window.addEventListener("resize", function () { applySidebarState(); });
+  document.addEventListener("keydown", function (e) {
+    if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+    var k = e.key.toLowerCase();
+    if (k === "b" && !e.shiftKey) {
+      e.preventDefault();
+      toggleSidebar();
+    } else if ((k === "j" || e.key === "`" || e.code === "Backquote") && !e.shiftKey) {
+      e.preventDefault();
+      toggleConsole();
+    }
+  });
+
   el.btnEof.addEventListener("click", function () {
     if (!running || !curSid) return;
     var sid = curSid;
