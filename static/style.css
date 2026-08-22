@@ -107,6 +107,24 @@ body {
   display: flex; flex: 1 1 auto;
   min-height: 0;
 }
+#editor-col { flex: 1 1 0; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+#code-toolbar {
+  display: none;
+  gap: 4px; padding: 4px 6px;
+  background: var(--panel); border-bottom: 1px solid var(--border);
+  flex: 0 0 auto; overflow-x: auto; scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+#code-toolbar::-webkit-scrollbar { display: none; }
+#code-toolbar button {
+  flex: 0 0 auto;
+  background: var(--panel2); color: var(--fg);
+  border: 1px solid var(--border); border-radius: 4px;
+  padding: 4px 8px; font-family: inherit; font-size: 13px; line-height: 1;
+  cursor: pointer; min-width: 28px;
+}
+#code-toolbar button:hover { border-color: var(--fg); }
+#code-toolbar button:active { background: var(--fg); color: var(--ink); }
 
 /* ---------- sidebar ---------- */
 #sidebar {
@@ -232,7 +250,7 @@ body {
 
 /* ---------- editor ---------- */
 #editor-wrap {
-  flex: 1 1 0; display: flex;
+  flex: 1 1 auto; display: flex;
   min-width: 0; min-height: 0;
   position: relative;
   transition: flex-basis .22s ease;
@@ -250,6 +268,10 @@ body {
 #gutter div.err {
   background: var(--fg); color: var(--ink); font-weight: 700;
   border-right: 2px solid var(--fg);
+}
+#gutter div.warn {
+  background: var(--warn); color: var(--ink); font-weight: 700;
+  border-right: 2px solid var(--warn);
 }
 #gutter div.flash {
   background: var(--warn); color: var(--ink);
@@ -339,6 +361,11 @@ body {
   font-weight: 700; padding: 1px 6px; margin: 2px 0; border-radius: 2px;
   display: inline-block;
 }
+#console-out .warnline {
+  background: var(--warn); color: var(--ink);
+  font-weight: 700; padding: 1px 6px; margin: 2px 0; border-radius: 2px;
+  display: inline-block;
+}
 #console-input-row {
   display: none;
   align-items: center; gap: 6px;
@@ -363,6 +390,30 @@ body {
   padding: 4px 10px; letter-spacing: 1px;
 }
 #btn-eof:hover { border-color: var(--fg); color: var(--fg); }
+#stdin-source-row {
+  display: flex; gap: 6px; align-items: center;
+  padding: 4px 10px; border-top: 1px solid var(--border);
+  background: var(--panel2);
+}
+#stdin-src-label { color: var(--dim); font-size: 11px; font-weight: 700; letter-spacing: 1px; white-space: nowrap; }
+#inp-stdin {
+  flex: 1 1 auto; min-width: 0;
+  background: var(--bg); color: var(--fg);
+  border: 1px solid var(--border); border-radius: 4px;
+  padding: 4px 8px; font-family: inherit; font-size: 12px;
+  outline: none; resize: vertical; min-height: 28px; max-height: 80px;
+}
+#inp-stdin:focus { border-color: var(--fg); }
+#search-results { margin-top: 6px; max-height: 180px; overflow-y: auto; border-top: 1px solid var(--border); padding-top: 6px; }
+#search-results[hidden] { display: none; }
+.search-hit { display: flex; gap: 8px; padding: 4px 6px; cursor: pointer; border-radius: 3px; font-size: 12px; line-height: 1.4; }
+.search-hit:hover { background: var(--panel); }
+.search-hit-file { color: var(--warn); font-weight: 700; flex: 0 0 auto; }
+.search-hit-text { color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1 1 auto; }
+.lens-err { text-decoration: wavy underline #ff5555; text-decoration-thickness: 2px; text-underline-offset: 3px; }
+.lens-warn { text-decoration: wavy underline var(--warn); text-decoration-thickness: 2px; text-underline-offset: 3px; }
+.lens-err:hover, .lens-warn:hover { background: rgba(255,255,255,.06); }
+#findbar-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 
 /* ---------- themed modal ---------- */
 .modal-overlay {
@@ -456,11 +507,11 @@ body {
 /* ---------- find bar ---------- */
 #findbar {
   position: fixed; top: 46px; left: 50%; transform: translateX(-50%);
-  z-index: 80; display: flex; gap: 6px; align-items: center;
+  z-index: 80; display: flex; flex-direction: column; gap: 0;
   background: var(--panel2); border: 1px solid var(--border);
   border-radius: 6px; padding: 8px 10px;
   box-shadow: 0 8px 30px rgba(0, 0, 0, .5);
-  max-width: 92vw;
+  max-width: 92vw; min-width: 320px;
 }
 #findbar[hidden] { display: none; }
 #findbar input {
@@ -529,4 +580,5 @@ body {
   #handle-console { flex: 0 0 8px; }
   #main { position: relative; }
   #findbar { top: 52px; }
+  #code-toolbar { display: flex; position: sticky; top: 0; z-index: 3; }
 }

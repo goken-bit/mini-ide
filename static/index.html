@@ -4,6 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
 <title>MiniIDE</title>
+<link rel="manifest" href="/manifest.json">
+<meta name="theme-color" content="#0a0a0a">
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
@@ -37,8 +39,31 @@
      </div>
      <ul id="filelist"></ul>
    </aside>
-   <button id="handle-sidebar" class="pane-handle pane-handle-v" title="Toggle sidebar (Ctrl+B)" aria-label="Toggle sidebar" aria-expanded="true" aria-controls="sidebar"><span></span></button>
-   <section id="editor-wrap">
+     <button id="handle-sidebar" class="pane-handle pane-handle-v" title="Toggle sidebar (Ctrl+B)" aria-label="Toggle sidebar" aria-expanded="true" aria-controls="sidebar"><span></span></button>
+    <div id="editor-col">
+     <div id="code-toolbar" aria-label="Code toolbar">
+      <button data-ins="{" title="Insert {">{</button>
+      <button data-ins="}" title="Insert }">}</button>
+      <button data-ins="[" title="Insert [">[</button>
+      <button data-ins="]" title="Insert ]">]</button>
+      <button data-ins="(" title="Insert (">(</button>
+      <button data-ins=")" title="Insert )">)</button>
+      <button data-ins=":" title="Insert :">:</button>
+      <button data-ins=";" title="Insert ;">;</button>
+      <button data-ins="&quot;" title="Insert &quot;">&quot;</button>
+      <button data-ins="'" title="Insert '">'</button>
+      <button data-ins="=" title="Insert =">=</button>
+      <button data-ins="<" title="Insert <">&lt;</button>
+      <button data-ins=">" title="Insert >">&gt;</button>
+      <button data-ins="/" title="Insert /">/</button>
+      <button data-ins="\" title="Insert \">\</button>
+      <button data-ins="|" title="Insert |">|</button>
+      <button data-tab title="Tab (4 spaces)">Tab</button>
+      <button data-arrow="-1" title="Move left">&#8592;</button>
+      <button data-arrow="1" title="Move right">&#8594;</button>
+      <button data-undo title="Undo">Undo</button>
+    </div>
+    <section id="editor-wrap">
     <div id="gutter" aria-hidden="true"></div>
     <div id="code-wrap">
       <div id="find-layer" aria-hidden="true"><pre id="find-pre"></pre></div>
@@ -46,6 +71,7 @@
       <textarea id="editor" spellcheck="false" autocomplete="off" autocapitalize="off" wrap="off"></textarea>
     </div>
   </section>
+  </div>
 </div>
 <button id="handle-console" class="pane-handle pane-handle-h" title="Toggle terminal (Ctrl+J)" aria-label="Toggle terminal" aria-expanded="true" aria-controls="console"><span></span></button>
 <section id="console" aria-label="Terminal">
@@ -67,17 +93,27 @@
     <input id="console-inp" placeholder="program input — type and press Enter" autocomplete="off" spellcheck="false">
     <button id="btn-eof" title="Send EOF (close stdin)">EOF</button>
   </div>
+  <div id="stdin-source-row">
+    <span id="stdin-src-label">stdin source</span>
+    <textarea id="inp-stdin" placeholder="stdin for next run (or pick file)" rows="2" spellcheck="false"></textarea>
+    <input type="file" id="stdin-file" hidden>
+    <button id="btn-stdin-file" class="cbtn" title="Load stdin from file">File</button>
+    <button id="btn-stdin-clear" class="cbtn" title="Clear stdin source">Clear</button>
+  </div>
 </section>
 <div id="findbar" hidden>
-  <input id="find-inp" placeholder="Find" autocomplete="off" spellcheck="false">
-  <input id="find-repl" placeholder="Replace" autocomplete="off" spellcheck="false">
-  <button id="find-prev" title="Previous match">&#8593;</button>
-  <button id="find-next" title="Next match">&#8595;</button>
-  <label class="fd-case" title="Match case"><input type="checkbox" id="find-case"> Aa</label>
-  <button id="find-rep" title="Replace current match">Rep</button>
-  <button id="find-repall" title="Replace all matches">All</button>
-  <span id="find-count"></span>
-  <button id="find-close" title="Close (Esc)">&#10005;</button>
+  <div id="findbar-row">
+    <input id="find-inp" placeholder="Find" autocomplete="off" spellcheck="false">
+    <input id="find-repl" placeholder="Replace" autocomplete="off" spellcheck="false">
+    <button id="find-prev" title="Previous match">&#8593;</button>
+    <button id="find-next" title="Next match">&#8595;</button>
+    <label class="fd-case" title="Match case"><input type="checkbox" id="find-case"> Aa</label>
+    <button id="find-rep" title="Replace current match">Rep</button>
+    <button id="find-repall" title="Replace all matches">All</button>
+    <span id="find-count"></span>
+    <button id="find-close" title="Close (Esc)">&#10005;</button>
+  </div>
+  <div id="search-results" hidden></div>
 </div>
 <div id="sidebar-backdrop" hidden aria-hidden="true"></div>
 <footer id="statusbar">

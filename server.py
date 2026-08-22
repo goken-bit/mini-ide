@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import codecs, io, json, os, queue, re, select, shutil, subprocess, tempfile, threading, time, uuid, zipfile
+import codecs, io, json, os, queue, re, select, shlex, shutil, subprocess, tempfile, threading, time, uuid, zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
@@ -11,12 +11,14 @@ MAX_BODY = 4 << 20
 
 NAME_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_. +\-()\[\]/]{0,199}$")
 SRCS_RE = re.compile(r"^\s*srcs\s*=\s*(.+?)\s*$")
+FLAGS_RE = re.compile(r"^\s*flags\s*=\s*(.+?)\s*$")
 LANG_EXT = {".py": "python", ".pyw": "python",
             ".cpp": "cpp", ".cc": "cpp", ".cxx": "cpp", ".c++": "cpp",
             ".c": "cpp", ".h": "cpp", ".hpp": "cpp", ".hh": "cpp"}
 MIME = {".html": "text/html; charset=utf-8",
         ".js": "text/javascript; charset=utf-8",
         ".css": "text/css; charset=utf-8",
+        ".json": "application/json; charset=utf-8",
         ".svg": "image/svg+xml"}
 RUN_LOCK = threading.Lock()
 SESSIONS = {}
@@ -170,13 +172,12 @@ def parse_cpp(stderr):
             lineno, col = int(m.group(2)), int(m.group(3) or 0)
         except ValueError:
             continue
-        if m.group(4) != "error" and not m.group(4).startswith("fatal error"):
-            continue
-        key = (lineno, col)
+        kind = "warning" if "warning" in m.group(4) else "error"
+        key = (lineno, col, kind)
         if key in seen:
             continue
         seen.add(key)
-        errs.append({"line": lineno, "col": col or None, "msg": m.group(5)})
+        errs.append({"line": lineno, "col": col or None, "msg": m.group(5), "kind": kind})
     return errs
 
 
@@ -280,6 +281,24 @@ def cpp_srcs(main):
     return out
 
 
+def cpp_flags():
+    proj = os.path.join(WS, "project.txt")
+    if not os.path.isfile(proj):
+        return []
+    try:
+        with open(proj, encoding="utf-8") as f:
+            for ln in f.read().splitlines():
+                m = FLAGS_RE.match(ln)
+                if m:
+                    try:
+                        return shlex.split(m.group(1))
+                    except ValueError:
+                        return [s for s in m.group(1).split() if s]
+    except OSError:
+        pass
+    return []
+
+
 def run_session(sess, path):
     if sess.lang == "python":
         run_proc(sess, subprocess.Popen([PYTHON, "-u", path] + sess.args, cwd=WS,
@@ -291,12 +310,13 @@ def run_session(sess, path):
     os.close(binfd)
     try:
         srcs = cpp_srcs(path)
+        flags = cpp_flags()
         comp = run_cmd([CLANG, "-std=c++17", "-O0", "-Wall",
-                        "-fcolor-diagnostics=never"] + srcs + ["-o", binpath],
+                        "-fcolor-diagnostics=never"] + flags + srcs + ["-o", binpath],
                        cwd=WS, timeout=30)
         if comp["exit_code"] != 0 and "unknown argument" in comp["stderr"]:
             comp = run_cmd([CLANG, "-std=c++17", "-O0", "-Wall",
-                            "-fno-color-diagnostics"] + srcs + ["-o", binpath],
+                            "-fno-color-diagnostics"] + flags + srcs + ["-o", binpath],
                            cwd=WS, timeout=30)
         if comp["exit_code"] != 0:
             sess_emit(sess, "err", comp["stderr"])
@@ -304,6 +324,11 @@ def run_session(sess, path):
             sess_emit(sess, "done", {"exit": comp["exit_code"], "duration": 0})
             sess.done.set()
             return
+        if comp["stderr"]:
+            warns = parse_cpp(comp["stderr"])
+            if warns:
+                sess_emit(sess, "err", comp["stderr"])
+                sess_emit(sess, "errs", warns)
         run_proc(sess, subprocess.Popen([binpath] + sess.args, cwd=WS,
                                         stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                         stderr=subprocess.PIPE, text=True, bufsize=1,
@@ -414,6 +439,11 @@ def api_files(req):
 
 
 def check_args(args):
+    if isinstance(args, str):
+        try:
+            args = shlex.split(args)
+        except ValueError as e:
+            raise ValueError(str(e))
     if not isinstance(args, list):
         raise ValueError("args must be a list")
     total = 0
@@ -424,6 +454,28 @@ def check_args(args):
     if total > 65536:
         raise ValueError("too many arguments")
     return args
+
+
+def api_search(q):
+    if not isinstance(q, str) or not q.strip():
+        raise ValueError("missing query")
+    q = q.strip()
+    if len(q) > 200:
+        raise ValueError("query too long")
+    hits = []
+    low = q.lower()
+    for rel in list_files():
+        p = os.path.join(WS, rel)
+        try:
+            with open(p, encoding="utf-8", errors="ignore") as f:
+                for idx, line in enumerate(f, 1):
+                    if low in line.lower():
+                        hits.append({"file": rel, "line": idx, "text": line.rstrip("\n")[:300]})
+                        if len(hits) >= 200:
+                            return hits
+        except OSError:
+            continue
+    return hits
 
 
 def export_zip():
@@ -530,6 +582,13 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(200, api_versions(q.get("name", "")))
             except ValueError as e:
                 self._json(400, {"error": str(e)})
+        elif path == "/api/search":
+            q = {k: v[0] for k, v in parse_qs(parts.query).items()}
+            try:
+                hits = api_search(q.get("q", ""))
+                self._json(200, {"hits": hits})
+            except ValueError as e:
+                self._json(400, {"error": str(e)})
         elif path == "/api/export":
             body = export_zip()
             q = {k: v[0] for k, v in parse_qs(parts.query).items()}
@@ -543,7 +602,7 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
         elif path in ("/", "/index.html"):
             self._file("index.html", STATIC)
-        elif path in ("/app.js", "/style.css"):
+        elif path in ("/app.js", "/style.css", "/manifest.json", "/sw.js"):
             self._file(path.lstrip("/"), STATIC)
         else:
             self.send_error(404)
@@ -556,6 +615,12 @@ class Handler(BaseHTTPRequestHandler):
                 path = sanitize(req.get("path", ""))
                 args = check_args(req.get("args") or [])
                 sid = start_session("run", path, args)
+                stdin_src = req.get("stdin")
+                if isinstance(stdin_src, str) and stdin_src:
+                    sess = SESSIONS.get(sid)
+                    if sess is not None:
+                        for ln in stdin_src.splitlines():
+                            sess.stdin_q.put(ln)
             except RuntimeError as e:
                 self._json(409, {"error": str(e)})
             except (FileNotFoundError, ValueError) as e:

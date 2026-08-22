@@ -43,6 +43,7 @@
     findRepall: $("find-repall"),
     findCount: $("find-count"),
     findClose: $("find-close"),
+    searchResults: $("search-results"),
     filePicker: $("file-picker"),
     runState: $("run-state"),
     runStats: $("run-stats"),
@@ -50,13 +51,18 @@
     stdinRow: $("console-input-row"),
     stdinInp: $("console-inp"),
     btnEof: $("btn-eof"),
+    inpStdin: $("inp-stdin"),
+    stdinFile: $("stdin-file"),
+    btnStdinFile: $("btn-stdin-file"),
+    btnStdinClear: $("btn-stdin-clear"),
     sidebar: $("sidebar"),
     consolePanel: $("console"),
     btnToggleSidebar: $("btn-toggle-sidebar"),
     btnToggleConsole: $("btn-toggle-console"),
     handleSidebar: $("handle-sidebar"),
     handleConsole: $("handle-console"),
-    backdrop: $("sidebar-backdrop")
+    backdrop: $("sidebar-backdrop"),
+    toolbar: $("code-toolbar")
   };
 
   const LS = "minide.files.";
@@ -174,11 +180,30 @@
     return out;
   }
 
+  function highlightWithLens(src, lang, errs) {
+    if (!errs || !Object.keys(errs).length) return highlight(src, lang);
+    var lines = src.split("\n");
+    var out = "";
+    for (var i = 0; i < lines.length; i++) {
+      var ln = i + 1;
+      var html = highlight(lines[i], lang);
+      var er = errs[ln];
+      if (er) {
+        var cls = er.kind === "warning" ? "lens-warn" : "lens-err";
+        html = '<span class="' + cls + '" title="' + esc(er.msg) + '">' + (html || " ") + "</span>";
+      }
+      out += html;
+      if (i < lines.length - 1) out += "\n";
+    }
+    return out;
+  }
+
   function render() {
     var src = current && files[current] !== undefined ? files[current] : "";
     if (el.editor.value !== src) el.editor.value = src;
     var lang = current ? langOf(current) : null;
-    el.hlCode.innerHTML = highlight(src, lang);
+    var errs = current ? (errMap[current] || {}) : {};
+    el.hlCode.innerHTML = highlightWithLens(src, lang, errs);
     el.hl.scrollTop = el.editor.scrollTop;
     el.hl.scrollLeft = el.editor.scrollLeft;
     buildGutter(src, lang);
@@ -202,8 +227,10 @@
     var errs = errMap[current] || {};
     var h = "";
     for (var i = 1; i <= n; i++) {
-      var cls = errs[i] ? "err" : "";
-      h += "<div" + (cls ? " class=\"" + cls + "\"" : "") + ">" + i + "</div>";
+      var er = errs[i];
+      var cls = er ? (er.kind === "warning" ? "warn" : "err") : "";
+      var tip = er ? ' title="' + esc(er.msg) + '"' : "";
+      h += "<div" + (cls ? " class=\"" + cls + "\"" + tip : "") + ">" + i + "</div>";
     }
     el.gutter.innerHTML = h;
     if (lang === "cpp" && n < 1000) {
@@ -554,13 +581,35 @@
     }
   }
 
+  function shlexSplit(s) {
+    var out = [], cur = "", q = null, esc = false;
+    for (var i = 0; i < s.length; i++) {
+      var c = s[i];
+      if (esc) { cur += c; esc = false; continue; }
+      if (c === "\\" && q !== "'") { esc = true; continue; }
+      if (q) {
+        if (c === q) q = null;
+        else cur += c;
+      } else {
+        if (c === '"' || c === "'") q = c;
+        else if (/\s/.test(c)) { if (cur) { out.push(cur); cur = ""; } }
+        else cur += c;
+      }
+    }
+    if (cur) out.push(cur);
+    return out;
+  }
+
   function run() {
     if (!current) return notify("Open or create a file first.");
     var f = current;
     if (!files[f] && files[f] !== "") return notify("File not loaded yet.");
     if (running) { pending = "run"; if (curSid) api("/api/stop", { json: { id: curSid } }).catch(function () {}); return; }
     saveFile(f).then(function () {
-      startRun(api("/api/run", { json: { path: f, args: argsMap[f] || [] } }), f);
+      var stdinSrc = el.inpStdin ? el.inpStdin.value : "";
+      var payload = { path: f, args: argsMap[f] || [] };
+      if (stdinSrc) payload.stdin = stdinSrc;
+      startRun(api("/api/run", { json: payload }), f);
     });
   }
 
@@ -615,8 +664,9 @@
         errs.forEach(function (er) {
           errMap[errFile][er.line] = er;
           var col = er.col ? ":" + er.col : "";
-          log('<div class="errline" data-line="' + er.line + '" data-file="' + esc(errFile) + '">' +
-            esc(errFile) + col + ": " + esc(er.msg) + "</div>");
+          var kind = er.kind === "warning" ? "warnline" : "errline";
+          log('<div class="' + kind + '" data-line="' + er.line + '" data-file="' + esc(errFile) + '">' +
+            esc(errFile) + col + " [" + (er.kind || "error") + "]: " + esc(er.msg) + "</div>");
         });
         render();
       });
@@ -866,7 +916,31 @@
 
   function renderFindLayer() {
     var layer = el.findLayer;
-    if (!findState.open || !findState.q) { layer.style.display = "none"; return; }
+    var errs = current ? (errMap[current] || {}) : {};
+    var hasLens = errs && Object.keys(errs).length;
+    if (!findState.open || !findState.q) {
+      if (hasLens && current) {
+        var src2 = el.editor.value;
+        var lines2 = src2.split("\n");
+        var out2 = "";
+        for (var li = 0; li < lines2.length; li++) {
+          var er = errs[li + 1];
+          var html2 = esc(lines2[li]);
+          if (er) {
+            var cls2 = er.kind === "warning" ? "lens-warn" : "lens-err";
+            html2 = '<span class="' + cls2 + '" title="' + esc(er.msg) + '">' + (html2 || " ") + "</span>";
+          }
+          out2 += html2;
+          if (li < lines2.length - 1) out2 += "\n";
+        }
+        el.findPre.innerHTML = out2;
+        layer.style.display = "";
+        layer.scrollTop = el.editor.scrollTop;
+        layer.scrollLeft = el.editor.scrollLeft;
+        return;
+      }
+      layer.style.display = "none"; return;
+    }
     var src = el.editor.value;
     var re = findRegex();
     var out = "", last = 0, k = 0;
@@ -886,6 +960,21 @@
       last = mm.e;
     });
     out += esc(src.slice(last));
+    if (hasLens) {
+      var parts = out.split("\n");
+      var rebuilt = "";
+      for (var pi = 0; pi < parts.length; pi++) {
+        var er2 = errs[pi + 1];
+        var seg = parts[pi];
+        if (er2) {
+          var cls3 = er2.kind === "warning" ? "lens-warn" : "lens-err";
+          seg = '<span class="' + cls3 + '" title="' + esc(er2.msg) + '">' + (seg || " ") + "</span>";
+        }
+        rebuilt += seg;
+        if (pi < parts.length - 1) rebuilt += "\n";
+      }
+      out = rebuilt;
+    }
     el.findPre.innerHTML = out || "";
     layer.style.display = "";
     layer.scrollTop = el.editor.scrollTop;
@@ -940,6 +1029,8 @@
       if (sel && !/\n/.test(sel)) { findState.q = sel; el.findInp.value = sel; }
     }
     setFindResult();
+    if (findState.q) doGlobalSearch(findState.q);
+    else if (el.searchResults) { el.searchResults.hidden = true; el.searchResults.innerHTML = ""; }
     el.findInp.focus();
     el.findInp.select();
   }
@@ -948,6 +1039,8 @@
     findState.open = false;
     el.findBar.hidden = true;
     el.findLayer.style.display = "none";
+    if (el.searchResults) { el.searchResults.hidden = true; el.searchResults.innerHTML = ""; }
+    render();
     el.editor.focus();
   }
 
@@ -1129,19 +1222,91 @@
       el.findRepl.select();
       return;
     }
+    if ((e.ctrlKey || e.metaKey) && e.key === "/") {
+      e.preventDefault();
+      var ta = el.editor;
+      var lang = langOf(current);
+      var comm = lang === "cpp" ? "// " : "# ";
+      var s = ta.selectionStart, ee = ta.selectionEnd;
+      var val = ta.value;
+      var ls = val.lastIndexOf("\n", s - 1) + 1;
+      var le = val.indexOf("\n", ee);
+      if (le < 0) le = val.length;
+      var block = val.slice(ls, le);
+      var lines = block.split("\n");
+      var allComm = lines.every(function (ln) { return !ln.trim() || ln.trim().startsWith(comm.trim()); });
+      var out = lines.map(function (ln) {
+        if (!ln.trim()) return ln;
+        var ind = (ln.match(/^[ \t]*/) || [""])[0];
+        var rest = ln.slice(ind.length);
+        if (allComm) {
+          if (rest.startsWith(comm)) return ind + rest.slice(comm.length);
+          if (rest.startsWith(comm.trim())) return ind + rest.slice(comm.trim().length).replace(/^ /, "");
+          return ln;
+        } else {
+          return ind + comm + rest;
+        }
+      }).join("\n");
+      ta.setRangeText(out, ls, le, "end");
+      var ev2 = new Event("input", { bubbles: true });
+      ta.dispatchEvent(ev2);
+      return;
+    }
+    var PAIRS = { "(": ")", "[": "]", "{": "}", "\"": "\"", "'": "'", "<": ">" };
+    if (!e.ctrlKey && !e.metaKey && !e.altKey && PAIRS[e.key] && !e.shiftKey || (e.key === '"' || e.key === "'")) {
+      var ta2 = el.editor;
+      var s2 = ta2.selectionStart, e2 = ta2.selectionEnd;
+      var close = PAIRS[e.key] || e.key;
+      if (s2 !== e2) {
+        e.preventDefault();
+        var sel = ta2.value.slice(s2, e2);
+        ta2.setRangeText(e.key + sel + close, s2, e2, "end");
+        ta2.setSelectionRange(s2 + 1, e2 + 1);
+        var ev3 = new Event("input", { bubbles: true });
+        ta2.dispatchEvent(ev3);
+        return;
+      } else {
+        var nxt = ta2.value[s2] || "";
+        if (nxt === close && (e.key === '"' || e.key === "'" || e.key === ")" || e.key === "]" || e.key === "}")) {
+          e.preventDefault();
+          ta2.setSelectionRange(s2 + 1, s2 + 1);
+          return;
+        }
+        if (e.key === "(" || e.key === "[" || e.key === "{" || e.key === '"' || e.key === "'") {
+          e.preventDefault();
+          ta2.setRangeText(e.key + close, s2, e2, "end");
+          ta2.setSelectionRange(s2 + 1, s2 + 1);
+          var ev4 = new Event("input", { bubbles: true });
+          ta2.dispatchEvent(ev4);
+          syncScroll();
+          render();
+          return;
+        }
+      }
+    }
     if (e.key === "Backspace" && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
       var ta = el.editor;
       var s = ta.selectionStart;
       if (s === ta.selectionEnd && s > 0) {
         var before = ta.value.slice(0, s);
+        var after = ta.value.slice(s, s + 1);
+        var pair = before[before.length - 1] + after;
+        if (pair === "()" || pair === "[]" || pair === "{}" || pair === '""' || pair === "''" || pair === "<>") {
+          e.preventDefault();
+          ta.setRangeText("", s - 1, s + 1, "end");
+          var ev = new Event("input", { bubbles: true });
+          ta.dispatchEvent(ev);
+          return;
+        }
         var lineStart = before.lastIndexOf("\n") + 1;
         var col = s - lineStart;
         var indent = before.slice(lineStart);
         if (col >= 4 && col % 4 === 0 && /^[ \t]+$/.test(indent)) {
           e.preventDefault();
           ta.setRangeText("", s - 4, s, "end");
-          var ev = new Event("input", { bubbles: true });
-          ta.dispatchEvent(ev);
+          var ev5 = new Event("input", { bubbles: true });
+          ta.dispatchEvent(ev5);
+          return;
         }
       }
     }
@@ -1150,6 +1315,7 @@
       var ta = el.editor;
       var s = ta.selectionStart;
       var before = ta.value.slice(0, s);
+      var after = ta.value.slice(s);
       var lineStart = before.lastIndexOf("\n") + 1;
       var curLine = before.slice(lineStart);
       var indent = (/^[ \t]*/.exec(curLine) || [""])[0];
@@ -1160,6 +1326,17 @@
       } else if (langOf(current) === "cpp") {
         if (trimmed.endsWith("{")) next += "    ";
         else if (trimmed.startsWith("}") && indent.length >= 4) next = indent.slice(4);
+      }
+      if (after[0] === "}" || after[0] === ")" || after[0] === "]") {
+        ta.setRangeText("\n" + next, s, ta.selectionEnd, "end");
+        var mid = s + 1 + next.length;
+        ta.setRangeText("\n" + indent, mid, mid, "end");
+        ta.setSelectionRange(mid, mid);
+        var ev6 = new Event("input", { bubbles: true });
+        ta.dispatchEvent(ev6);
+        syncScroll();
+        render();
+        return;
       }
       ta.setRangeText("\n" + next, s, ta.selectionEnd, "end");
       var ev = new Event("input", { bubbles: true });
@@ -1172,6 +1349,17 @@
       el.editor.setRangeText("    ", s, el.editor.selectionEnd, "end");
       var ev = new Event("input", { bubbles: true });
       el.editor.dispatchEvent(ev);
+    } else if (e.key === "Tab" && e.shiftKey) {
+      e.preventDefault();
+      var ta3 = el.editor;
+      var ss = ta3.selectionStart;
+      var bef = ta3.value.slice(0, ss);
+      var lst2 = bef.lastIndexOf("\n") + 1;
+      if (ta3.value.slice(lst2, ss).startsWith("    ")) {
+        ta3.setRangeText("", lst2, lst2 + 4, "end");
+        var ev7 = new Event("input", { bubbles: true });
+        ta3.dispatchEvent(ev7);
+      }
     }
   });
 
@@ -1222,17 +1410,42 @@
 
   function syncArgsInput() {
     el.argsRow.classList.toggle("show", !!current);
-    el.inpArgs.value = current && argsMap[current] ? argsMap[current].join(" ") : "";
+    if (!current) el.inpArgs.value = "";
+    else if (argsMap[current]) {
+      el.inpArgs.value = argsMap[current].map(function(a){ return /\s/.test(a) ? '"' + a.replace(/"/g,'\\"') + '"' : a; }).join(" ");
+    } else el.inpArgs.value = "";
   }
   el.inpArgs.addEventListener("input", function () {
     if (!current) return;
-    argsMap[current] = el.inpArgs.value.trim() ? el.inpArgs.value.trim().split(/\s+/) : [];
+    var v = el.inpArgs.value.trim();
+    argsMap[current] = v ? shlexSplit(v) : [];
     schedulePersist();
   });
+
+  function doGlobalSearch(q) {
+    if (!q || q.length < 2) { el.searchResults.hidden = true; el.searchResults.innerHTML = ""; return; }
+    api("/api/search?q=" + encodeURIComponent(q)).then(function (j) {
+      var hits = j.hits || [];
+      if (!hits.length) {
+        el.searchResults.hidden = false;
+        el.searchResults.innerHTML = '<div style="color:var(--dim);padding:4px">no workspace matches</div>';
+        return;
+      }
+      var h = "";
+      hits.forEach(function (hit) {
+        h += '<div class="search-hit" data-file="' + esc(hit.file) + '" data-line="' + hit.line + '">' +
+          '<span class="search-hit-file">' + esc(hit.file) + ':' + hit.line + '</span>' +
+          '<span class="search-hit-text">' + esc(hit.text) + '</span></div>';
+      });
+      el.searchResults.hidden = false;
+      el.searchResults.innerHTML = h;
+    }).catch(function () { el.searchResults.hidden = true; });
+  }
 
   el.findInp.addEventListener("input", function () {
     findState.q = el.findInp.value;
     setFindResult();
+    doGlobalSearch(findState.q);
   });
   el.findRepl.addEventListener("input", function () { findState.repl = el.findRepl.value; });
   el.findCase.addEventListener("change", function () {
@@ -1244,6 +1457,17 @@
   el.findRep.addEventListener("click", replaceOne);
   el.findRepall.addEventListener("click", replaceAll);
   el.findClose.addEventListener("click", closeFind);
+  if (el.searchResults) {
+    el.searchResults.addEventListener("click", function (e) {
+      var hit = e.target.closest(".search-hit");
+      if (!hit) return;
+      var file = hit.getAttribute("data-file");
+      var line = +hit.getAttribute("data-line");
+      var go = function () { jumpToLine(line); };
+      if (file !== current) openFile(file, go);
+      else go();
+    });
+  }
   el.findInp.addEventListener("keydown", function (e) {
     if (e.key === "Enter") { e.preventDefault(); goFind(e.shiftKey ? -1 : 1); }
     else if (e.key === "Escape") { e.preventDefault(); closeFind(); }
@@ -1258,7 +1482,7 @@
   el.editor.addEventListener("select", updateStatus);
 
   el.console.addEventListener("click", function (e) {
-    var t = e.target.closest(".errline");
+    var t = e.target.closest(".errline") || e.target.closest(".warnline");
     if (!t) return;
     var line = +t.getAttribute("data-line");
     var file = t.getAttribute("data-file");
@@ -1278,6 +1502,12 @@
   el.consolePanel.addEventListener("transitionend", onLayoutTransitionEnd);
   window.addEventListener("resize", function () { applySidebarState(); });
   document.addEventListener("keydown", function (e) {
+    if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === "F" || e.key === "f")) {
+      e.preventDefault();
+      openFind();
+      if (el.findInp) { el.findInp.focus(); el.findInp.select(); }
+      return;
+    }
     if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
     var k = e.key.toLowerCase();
     if (k === "b" && !e.shiftKey) {
@@ -1314,7 +1544,70 @@
     if (e.key === "Enter") { e.preventDefault(); if (el.inpName.value.trim()) createFile(el.inpName.value.trim()); }
   });
 
+  if (el.toolbar) {
+    el.toolbar.addEventListener("click", function (e) {
+      var btn = e.target.closest("button");
+      if (!btn) return;
+      e.preventDefault();
+      var ins = btn.getAttribute("data-ins");
+      var isTab = btn.hasAttribute("data-tab");
+      var isUndo = btn.hasAttribute("data-undo");
+      var arrow = btn.getAttribute("data-arrow");
+      var ta = el.editor;
+      ta.focus();
+      if (isTab) {
+        var s = ta.selectionStart;
+        ta.setRangeText("    ", s, ta.selectionEnd, "end");
+        var ev = new Event("input", { bubbles: true });
+        ta.dispatchEvent(ev);
+        syncScroll(); render();
+        return;
+      }
+      if (isUndo) {
+        try { document.execCommand("undo"); } catch (err) {}
+        ta.dispatchEvent(new Event("input", { bubbles: true }));
+        syncScroll(); render();
+        return;
+      }
+      if (arrow) {
+        var d = parseInt(arrow, 10);
+        var pos = ta.selectionStart;
+        var np = Math.max(0, Math.min(ta.value.length, pos + d));
+        ta.setSelectionRange(np, np);
+        updateStatus();
+        syncScroll();
+        return;
+      }
+      if (ins !== null) {
+        var s2 = ta.selectionStart, e2 = ta.selectionEnd;
+        ta.setRangeText(ins, s2, e2, "end");
+        var ev2 = new Event("input", { bubbles: true });
+        ta.dispatchEvent(ev2);
+        syncScroll(); render();
+      }
+    });
+  }
+
+  if (el.btnStdinFile) {
+    el.btnStdinFile.addEventListener("click", function () { el.stdinFile.click(); });
+  }
+  if (el.stdinFile) {
+    el.stdinFile.addEventListener("change", function () {
+      var f = el.stdinFile.files && el.stdinFile.files[0];
+      if (!f) return;
+      var r = new FileReader();
+      r.onload = function () { el.inpStdin.value = String(r.result || ""); };
+      r.readAsText(f);
+    });
+  }
+  if (el.btnStdinClear) {
+    el.btnStdinClear.addEventListener("click", function () { el.inpStdin.value = ""; el.stdinFile.value = ""; });
+  }
+
   function refresh() {
+    if ("serviceWorker" in navigator) {
+      try { navigator.serviceWorker.register("/sw.js"); } catch (e) {}
+    }
     api("/api/files").then(function (j) {
       var joined = j.files.slice();
       files.forEach(function (f) {
