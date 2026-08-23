@@ -29,8 +29,9 @@ def _resolve_exe(name, fallback):
     p = shutil.which(name)
     if p and os.path.isabs(p) and os.path.isfile(p):
         return p
-    if os.path.isabs(fallback) and os.path.isfile(fallback):
-        return fallback
+    for cand in [fallback, "/usr/bin/" + name, "/usr/local/bin/" + name, "/data/data/com.termux/files/usr/bin/" + name]:
+        if cand and os.path.isabs(cand) and os.path.isfile(cand):
+            return cand
     return p or fallback
 
 PYTHON = _resolve_exe("python3", "/data/data/com.termux/files/usr/bin/python3")
@@ -768,19 +769,17 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     global PYTHON, CLANG
     os.makedirs(WS, exist_ok=True)
-    py = shutil.which("python3")
-    if not py or not os.path.isabs(py) or not os.path.isfile(py):
-        py = "/data/data/com.termux/files/usr/bin/python3"
-    PYTHON = py
+    PYTHON = _resolve_exe("python3", "/data/data/com.termux/files/usr/bin/python3")
     if not os.path.isfile(PYTHON):
         print("[warn] python3 not found at " + PYTHON + ". Install Python 3.", flush=True)
-    cl = shutil.which("clang++")
-    if not cl or not os.path.isabs(cl) or not os.path.isfile(cl):
-        cl = "/data/data/com.termux/files/usr/bin/clang++"
-    CLANG = cl
+    else:
+        print(f"[info] python3: {PYTHON}", flush=True)
+    CLANG = _resolve_exe("clang++", "/data/data/com.termux/files/usr/bin/clang++")
     if not os.path.isfile(CLANG):
         print("[warn] C++ compiler not found: clang++ not found at " + CLANG, flush=True)
         print("       Install with: apt install clang  or  pkg install clang", flush=True)
+    else:
+        print(f"[info] clang++: {CLANG}", flush=True)
     host = os.environ.get("HOST", "0.0.0.0" if os.environ.get("PORT") else "127.0.0.1")
     port = int(os.environ.get("PORT", "8080"))
     httpd = ThreadingHTTPServer((host, port), Handler)

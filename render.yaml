@@ -3,5 +3,5 @@ services:
     name: mini-ide
     runtime: python
     plan: free
-    buildCommand: ""
+    buildCommand: "apt-get update && apt-get install -y clang || apt update && apt install -y clang; echo clang ready"
     startCommand: python3 server.py
