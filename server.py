@@ -25,8 +25,16 @@ SESSIONS = {}
 VER_FILE = os.path.join(WS, ".versions.json")
 VER_LOCK = threading.Lock()
 VER_MAX = 30
-PYTHON = shutil.which("python3") or "/data/data/com.termux/files/usr/bin/python3"
-CLANG = shutil.which("clang++") or "/data/data/com.termux/files/usr/bin/clang++"
+def _resolve_exe(name, fallback):
+    p = shutil.which(name)
+    if p and os.path.isabs(p) and os.path.isfile(p):
+        return p
+    if os.path.isabs(fallback) and os.path.isfile(fallback):
+        return fallback
+    return p or fallback
+
+PYTHON = _resolve_exe("python3", "/data/data/com.termux/files/usr/bin/python3")
+CLANG = _resolve_exe("clang++", "/data/data/com.termux/files/usr/bin/clang++")
 
 PY_FRAME = re.compile(r'File "([^"]+)", line (\d+)')
 CPP_DIAG = re.compile(r"^([^:]+):(\d+):(?:(?:(\d+)): )?((?:fatal )?error|warning): (.*)$", re.M)
@@ -128,6 +136,13 @@ def run_cmd(args, cwd, timeout):
     try:
         p = subprocess.run(args, cwd=cwd, capture_output=True, text=True, timeout=timeout)
         return {"stdout": p.stdout, "stderr": p.stderr, "exit_code": p.returncode}
+    except FileNotFoundError:
+        exe = args[0] if args else "compiler"
+        if "clang" in exe:
+            msg = "clang++ not installed. Install with: apt install clang  or  pkg install clang\n"
+        else:
+            msg = f"{exe} not found. Please install it.\n"
+        return {"stdout": "", "stderr": msg, "exit_code": 127}
     except subprocess.TimeoutExpired as e:
         tail = f"\n[process timed out after {timeout}s and was killed]"
         return {"stdout": (e.stdout or "") + tail, "stderr": e.stderr or "", "exit_code": 124}
@@ -186,76 +201,89 @@ def sess_emit(sess, kind, data):
 
 
 def run_proc(sess, proc, parse=None):
-    t0 = time.monotonic()
-    last_activity = [t0]
-    IDLE_LIMIT = 60
+    try:
+        t0 = time.monotonic()
+        last_activity = [t0]
+        IDLE_LIMIT = 60
 
-    def emit(kind, data):
-        if kind in ("out", "err"):
-            last_activity[0] = time.monotonic()
-        sess.events.put({"e": kind, "d": data})
-
-    def pump(stream, is_err):
-        dec = codecs.getincrementaldecoder("utf-8")(errors="replace")
-        buf = sess._errbuf if is_err else sess._outbuf
-        fd = stream.fileno()
-        try:
-            while True:
-                if select.select([stream], [], [], 0.1)[0]:
-                    chunk = os.read(fd, 4096)
-                    if not chunk:
-                        break
-                    text = dec.decode(chunk)
-                    if text:
-                        emit("err" if is_err else "out", text)
-                        buf.append(text)
-        except (OSError, ValueError):
-            pass
-        try:
-            tail = dec.decode(b"", final=True)
-            if tail:
-                emit("err" if is_err else "out", tail)
-                buf.append(tail)
-        except Exception:
-            pass
-
-    def write_stdin():
-        while True:
-            item = sess.stdin_q.get()
-            if item is None:
-                try:
-                    proc.stdin.close()
-                except (OSError, ValueError):
-                    pass
-                return
-            try:
-                proc.stdin.write(item + "\n")
-                proc.stdin.flush()
+        def emit(kind, data):
+            if kind in ("out", "err"):
                 last_activity[0] = time.monotonic()
+            sess.events.put({"e": kind, "d": data})
+
+        def pump(stream, is_err):
+            dec = codecs.getincrementaldecoder("utf-8")(errors="replace")
+            buf = sess._errbuf if is_err else sess._outbuf
+            fd = stream.fileno()
+            try:
+                while True:
+                    if select.select([stream], [], [], 0.1)[0]:
+                        chunk = os.read(fd, 4096)
+                        if not chunk:
+                            break
+                        text = dec.decode(chunk)
+                        if text:
+                            emit("err" if is_err else "out", text)
+                            buf.append(text)
             except (OSError, ValueError):
-                return
+                pass
+            try:
+                tail = dec.decode(b"", final=True)
+                if tail:
+                    emit("err" if is_err else "out", tail)
+                    buf.append(tail)
+            except Exception:
+                pass
 
-    t_out = threading.Thread(target=pump, args=(proc.stdout, False), daemon=True)
-    t_err = threading.Thread(target=pump, args=(proc.stderr, True), daemon=True)
-    t_in = threading.Thread(target=write_stdin, daemon=True)
-    t_out.start(); t_err.start(); t_in.start()
+        def write_stdin():
+            while True:
+                item = sess.stdin_q.get()
+                if item is None:
+                    try:
+                        proc.stdin.close()
+                    except (OSError, ValueError):
+                        pass
+                    return
+                try:
+                    proc.stdin.write(item + "\n")
+                    proc.stdin.flush()
+                    last_activity[0] = time.monotonic()
+                except (OSError, ValueError):
+                    return
 
-    while proc.poll() is None:
-        if sess.stop.is_set():
-            proc.kill()
-            emit("err", "\n[process stopped]")
-            break
-        if time.monotonic() - last_activity[0] > IDLE_LIMIT:
-            proc.kill()
-            emit("err", f"\n[process killed: no activity for {IDLE_LIMIT}s]")
-            break
-        time.sleep(0.05)
-    t_out.join(); t_err.join()
-    exit_code = proc.poll()
-    if parse == "py":
-        emit("errs", parse_py("".join(sess._errbuf)))
-    emit("done", {"exit": exit_code, "duration": int((time.monotonic() - t0) * 1000)})
-    sess.done.set()
+        t_out = threading.Thread(target=pump, args=(proc.stdout, False), daemon=True)
+        t_err = threading.Thread(target=pump, args=(proc.stderr, True), daemon=True)
+        t_in = threading.Thread(target=write_stdin, daemon=True)
+        t_out.start(); t_err.start(); t_in.start()
+
+        while proc.poll() is None:
+            if sess.stop.is_set():
+                proc.kill()
+                emit("err", "\n[process stopped]")
+                break
+            if time.monotonic() - last_activity[0] > IDLE_LIMIT:
+                proc.kill()
+                emit("err", f"\n[process killed: no activity for {IDLE_LIMIT}s]")
+                break
+            time.sleep(0.05)
+        t_out.join(); t_err.join()
+        exit_code = proc.poll()
+        if parse == "py":
+            emit("errs", parse_py("".join(sess._errbuf)))
+        emit("done", {"exit": exit_code, "duration": int((time.monotonic() - t0) * 1000)})
+        sess.done.set()
+    except FileNotFoundError as e:
+        exe = str(e.filename) if getattr(e, 'filename', None) else str(e)
+        if "clang" in exe or "clang" in str(e):
+            sess.events.put({"e": "err", "d": "clang++ not installed. Install with: apt install clang  or  pkg install clang\n"})
+        else:
+            sess.events.put({"e": "err", "d": f"{exe} not found. Please install it.\n"})
+        sess.events.put({"e": "done", "d": {"exit": 127, "duration": 0}})
+        sess.done.set()
+    except Exception as e:
+        sess.events.put({"e": "err", "d": f"\n[internal error: {e}]\n"})
+        sess.events.put({"e": "done", "d": {"exit": 1, "duration": 0}})
+        sess.done.set()
 
 
 def cpp_srcs(main):
@@ -301,14 +329,27 @@ def cpp_flags():
 
 def run_session(sess, path):
     if sess.lang == "python":
-        run_proc(sess, subprocess.Popen([PYTHON, "-u", path] + sess.args, cwd=WS,
-                                        stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                        stderr=subprocess.PIPE, text=True, bufsize=1,
-                                        errors="replace"), "py")
+        try:
+            proc = subprocess.Popen([PYTHON, "-u", path] + sess.args, cwd=WS,
+                                            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                            stderr=subprocess.PIPE, text=True, bufsize=1,
+                                            errors="replace")
+        except FileNotFoundError:
+            sess_emit(sess, "err", "python3 not found. Please install Python 3.\n")
+            sess_emit(sess, "done", {"exit": 127, "duration": 0})
+            sess.done.set()
+            return
+        run_proc(sess, proc, "py")
         return
     binfd, binpath = tempfile.mkstemp(prefix="ide_bin_")
     os.close(binfd)
     try:
+        if not os.path.isfile(CLANG):
+            sess_emit(sess, "err", "C++ compiler not found: clang++ not installed. Install with: apt install clang  or  pkg install clang\n")
+            sess_emit(sess, "errs", [])
+            sess_emit(sess, "done", {"exit": 127, "duration": 0})
+            sess.done.set()
+            return
         srcs = cpp_srcs(path)
         flags = cpp_flags()
         comp = run_cmd([CLANG, "-std=c++17", "-O0", "-Wall",
@@ -318,6 +359,11 @@ def run_session(sess, path):
             comp = run_cmd([CLANG, "-std=c++17", "-O0", "-Wall",
                             "-fno-color-diagnostics"] + flags + srcs + ["-o", binpath],
                            cwd=WS, timeout=30)
+        if "not installed" in comp.get("stderr", "") or "not found" in comp.get("stderr", ""):
+            sess_emit(sess, "err", comp["stderr"])
+            sess_emit(sess, "done", {"exit": 127, "duration": 0})
+            sess.done.set()
+            return
         if comp["exit_code"] != 0:
             sess_emit(sess, "err", comp["stderr"])
             sess_emit(sess, "errs", parse_cpp(comp["stderr"]))
@@ -329,10 +375,25 @@ def run_session(sess, path):
             if warns:
                 sess_emit(sess, "err", comp["stderr"])
                 sess_emit(sess, "errs", warns)
-        run_proc(sess, subprocess.Popen([binpath] + sess.args, cwd=WS,
-                                        stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                        stderr=subprocess.PIPE, text=True, bufsize=1,
-                                        errors="replace"))
+        try:
+            proc = subprocess.Popen([binpath] + sess.args, cwd=WS,
+                                            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                            stderr=subprocess.PIPE, text=True, bufsize=1,
+                                            errors="replace")
+        except FileNotFoundError:
+            sess_emit(sess, "err", "Failed to execute compiled binary.\n")
+            sess_emit(sess, "done", {"exit": 127, "duration": 0})
+            sess.done.set()
+            return
+        run_proc(sess, proc)
+    except FileNotFoundError as e:
+        exe = str(getattr(e, 'filename', '') or e)
+        if "clang" in exe.lower():
+            sess_emit(sess, "err", "C++ compiler not found: clang++ not installed. Install with: apt install clang  or  pkg install clang\n")
+        else:
+            sess_emit(sess, "err", f"C++ compiler not found: {exe}. Install with: apt install clang  or  pkg install clang\n")
+        sess_emit(sess, "done", {"exit": 127, "duration": 0})
+        sess.done.set()
     finally:
         try:
             os.unlink(binpath)
@@ -341,10 +402,17 @@ def run_session(sess, path):
 
 
 def run_shell(sess, cmd):
-    run_proc(sess, subprocess.Popen(cmd, shell=True, cwd=WS,
-                                    stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                    stderr=subprocess.PIPE, text=True, bufsize=1,
-                                    errors="replace"))
+    try:
+        proc = subprocess.Popen(cmd, shell=True, cwd=WS,
+                                        stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                        stderr=subprocess.PIPE, text=True, bufsize=1,
+                                        errors="replace")
+    except FileNotFoundError as e:
+        sess_emit(sess, "err", f"shell not found: {e}\n")
+        sess_emit(sess, "done", {"exit": 127, "duration": 0})
+        sess.done.set()
+        return
+    run_proc(sess, proc)
 
 
 def start_session(kind, target, args=None):
@@ -355,6 +423,10 @@ def start_session(kind, target, args=None):
         lang = LANG_EXT.get(os.path.splitext(target)[1].lower())
         if lang is None:
             raise ValueError("unsupported language")
+        if lang == "cpp" and not os.path.isfile(CLANG):
+            raise FileNotFoundError("C++ compiler not found: clang++ not installed. Install with: apt install clang  or  pkg install clang")
+        if lang == "python" and not os.path.isfile(PYTHON):
+            raise FileNotFoundError("Python interpreter not found: python3 not installed.")
     else:
         lang = "shell"
     if not RUN_LOCK.acquire(timeout=5):
@@ -379,6 +451,14 @@ def start_session(kind, target, args=None):
                 run_shell(sess, target)
             else:
                 run_session(sess, target)
+        except FileNotFoundError as e:
+            msg = str(e)
+            if "clang" in msg.lower() or (kind == "run" and sess.lang == "cpp"):
+                sess_emit(sess, "err", "C++ compiler not found: clang++ not installed. Install with: apt install clang  or  pkg install clang\n")
+            else:
+                sess_emit(sess, "err", f"Executable not found: {msg}. Please install it.\n")
+            sess_emit(sess, "done", {"exit": 127, "duration": 0})
+            sess.done.set()
         except Exception as e:
             sess_emit(sess, "err", f"\n[internal error: {e}]")
             sess_emit(sess, "done", {"exit": 1, "duration": 0})
@@ -686,7 +766,21 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
+    global PYTHON, CLANG
     os.makedirs(WS, exist_ok=True)
+    py = shutil.which("python3")
+    if not py or not os.path.isabs(py) or not os.path.isfile(py):
+        py = "/data/data/com.termux/files/usr/bin/python3"
+    PYTHON = py
+    if not os.path.isfile(PYTHON):
+        print("[warn] python3 not found at " + PYTHON + ". Install Python 3.", flush=True)
+    cl = shutil.which("clang++")
+    if not cl or not os.path.isabs(cl) or not os.path.isfile(cl):
+        cl = "/data/data/com.termux/files/usr/bin/clang++"
+    CLANG = cl
+    if not os.path.isfile(CLANG):
+        print("[warn] C++ compiler not found: clang++ not found at " + CLANG, flush=True)
+        print("       Install with: apt install clang  or  pkg install clang", flush=True)
     host = os.environ.get("HOST", "0.0.0.0" if os.environ.get("PORT") else "127.0.0.1")
     port = int(os.environ.get("PORT", "8080"))
     httpd = ThreadingHTTPServer((host, port), Handler)
